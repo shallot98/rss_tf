@@ -65,16 +65,43 @@ def load_config():
     if config_file.exists():
         try:
             with open(config_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                config = json.load(f)
+            
+            if 'telegram' not in config:
+                config['telegram'] = {'bot_token': '', 'chat_id': ''}
+            if 'rss_sources' not in config:
+                config['rss_sources'] = []
+            if 'monitor_settings' not in config:
+                config['monitor_settings'] = {
+                    'check_interval_min': 30,
+                    'check_interval_max': 60,
+                    'max_history': 100,
+                    'restart_after_checks': 100
+                }
+            return config
         except Exception as e:
             print(f"配置文件读取失败: {e}")
     
     return {
-        'keywords': [],
-        'notified_entries': {},
         'telegram': {
             'bot_token': '',
             'chat_id': ''
+        },
+        'rss_sources': [
+            {
+                'id': 'nodeseek',
+                'name': 'NodeSeek',
+                'url': 'https://rss.nodeseek.com/',
+                'keywords': [],
+                'notified_posts': [],
+                'notified_authors': []
+            }
+        ],
+        'monitor_settings': {
+            'check_interval_min': 30,
+            'check_interval_max': 60,
+            'max_history': 100,
+            'restart_after_checks': 100
         }
     }
 
@@ -85,7 +112,7 @@ def save_config(config):
     
     try:
         with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, ensure_ascii=False, indent=4)
+            json.dump(config, f, ensure_ascii=False, indent=2)
         return True
     except Exception as e:
         print(f"配置文件保存失败: {e}")
@@ -105,11 +132,9 @@ def is_monitor_running():
         with open(pid_file, 'r') as f:
             pid = int(f.read().strip())
         
-        # 检查进程是否存在
         import psutil
         if psutil.pid_exists(pid):
             process = psutil.Process(pid)
-            # 检查是否是我们的监控程序
             if "rss_main.py" in " ".join(process.cmdline()):
                 return True
         return False
@@ -133,7 +158,6 @@ def stop_monitor():
             process.terminate()
             print(f"正在停止监控程序 (PID: {pid})...")
             
-            # 等待进程结束
             try:
                 process.wait(timeout=5)
                 print("✓ 监控程序已停止")
@@ -143,7 +167,6 @@ def stop_monitor():
         else:
             print("监控程序进程不存在")
         
-        # 删除PID文件
         pid_file.unlink(missing_ok=True)
         
     except Exception as e:
@@ -183,10 +206,11 @@ def show_menu():
     print("\n=== 主菜单 ===")
     print("1. 配置Telegram机器人")
     print("2. 查看当前配置")
-    print("3. 启动监控程序")
-    print("4. 停止监控程序")
-    print("5. 查看监控状态")
-    print("6. 退出")
+    print("3. 管理RSS源")
+    print("4. 启动监控程序")
+    print("5. 停止监控程序")
+    print("6. 查看监控状态")
+    print("7. 退出")
     print()
 
 def show_config():
@@ -196,16 +220,109 @@ def show_config():
     print("\n=== 当前配置 ===")
     print(f"Bot Token: {'已设置' if config['telegram']['bot_token'] else '未设置'}")
     print(f"Chat ID: {'已设置' if config['telegram']['chat_id'] else '未设置'}")
-    print(f"关键词数量: {len(config['keywords'])}")
     
-    if config['keywords']:
-        print("关键词列表:")
-        for i, keyword in enumerate(config['keywords'], 1):
-            print(f"  {i}. {keyword}")
+    sources = config.get('rss_sources', [])
+    print(f"\nRSS源数量: {len(sources)}")
     
-    print("注意：关键词可以通过Telegram机器人指令管理")
-    print("指令：/add 关键词、/del 关键词、/list、/help")
+    if sources:
+        for i, source in enumerate(sources, 1):
+            kw_count = len(source.get('keywords', []))
+            print(f"\n{i}. {source['name']} (ID: {source.get('id', 'N/A')})")
+            print(f"   URL: {source['url']}")
+            print(f"   关键词: {kw_count}个")
+            if kw_count > 0:
+                keywords = source.get('keywords', [])[:3]
+                print(f"   示例: {', '.join(keywords)}{'...' if kw_count > 3 else ''}")
+    
+    settings = config.get('monitor_settings', {})
+    print(f"\n监控设置:")
+    print(f"  检查间隔: {settings.get('check_interval_min', 30)}-{settings.get('check_interval_max', 60)}秒")
+    print(f"  最大历史: {settings.get('max_history', 100)}条")
+    print(f"  重启周期: 每{settings.get('restart_after_checks', 100)}次检测")
+    
+    print("\n注意：源和关键词可以通过Telegram机器人指令管理")
+    print("指令：/addsource, /delsource, /listsources, /add, /del, /list, /help")
     print()
+
+def manage_sources():
+    """管理RSS源"""
+    config = load_config()
+    
+    while True:
+        print("\n=== RSS源管理 ===")
+        sources = config.get('rss_sources', [])
+        
+        if sources:
+            print("\n当前RSS源:")
+            for i, source in enumerate(sources, 1):
+                kw_count = len(source.get('keywords', []))
+                print(f"{i}. {source['name']} (ID: {source.get('id', 'N/A')})")
+                print(f"   URL: {source['url']}")
+                print(f"   关键词: {kw_count}个")
+        else:
+            print("\n当前没有RSS源")
+        
+        print("\n操作:")
+        print("1. 添加RSS源")
+        print("2. 删除RSS源")
+        print("3. 返回主菜单")
+        
+        choice = input("\n请选择操作 (1-3): ").strip()
+        
+        if choice == '1':
+            url = input("请输入RSS源URL: ").strip()
+            if not url:
+                print("✗ URL不能为空")
+                continue
+            
+            name = input("请输入源名称: ").strip()
+            if not name:
+                print("✗ 名称不能为空")
+                continue
+            
+            source_id = name.lower().replace(' ', '_')
+            
+            if any(s.get('id') == source_id or s.get('name') == name for s in sources):
+                print(f"✗ 源 '{name}' 已存在")
+                continue
+            
+            new_source = {
+                'id': source_id,
+                'name': name,
+                'url': url,
+                'keywords': [],
+                'notified_posts': [],
+                'notified_authors': []
+            }
+            config['rss_sources'].append(new_source)
+            
+            if save_config(config):
+                print(f"✓ 已添加源: {name}")
+            else:
+                print("✗ 保存失败")
+        
+        elif choice == '2':
+            if not sources:
+                print("✗ 没有可删除的源")
+                continue
+            
+            try:
+                idx = int(input("请输入要删除的源编号: ").strip())
+                if 1 <= idx <= len(sources):
+                    removed = sources.pop(idx - 1)
+                    if save_config(config):
+                        print(f"✓ 已删除源: {removed['name']}")
+                    else:
+                        print("✗ 保存失败")
+                else:
+                    print("✗ 无效的编号")
+            except ValueError:
+                print("✗ 请输入有效的数字")
+        
+        elif choice == '3':
+            break
+        else:
+            print("无效选择")
 
 def start_monitor():
     """启动监控程序"""
@@ -221,22 +338,18 @@ def start_monitor():
     
     print("\n=== 启动监控程序 ===")
     print("程序将在后台运行，start.py退出后监控程序仍会继续运行")
-    print("关键词可以通过Telegram机器人指令管理：")
-    print("- /add 关键词：添加关键词")
-    print("- /del 关键词：删除关键词")
-    print("- /list：查看所有关键词")
-    print("- /help：查看帮助")
+    print("源和关键词可以通过Telegram机器人指令管理：")
+    print("- 源管理: /addsource, /delsource, /listsources")
+    print("- 关键词管理: /add <源名> <关键词>, /del <源名> <关键词>, /list [源名]")
+    print("- 帮助: /help")
     print()
     
-    # 设置环境变量
     env = os.environ.copy()
     env['TG_BOT_TOKEN'] = config['telegram']['bot_token']
     env['TG_CHAT_ID'] = config['telegram']['chat_id']
     
     try:
-        # 在后台启动监控程序
         if sys.platform == "win32":
-            # Windows系统
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = subprocess.SW_HIDE
@@ -250,7 +363,6 @@ def start_monitor():
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
             )
         else:
-            # Linux/macOS系统
             process = subprocess.Popen(
                 [sys.executable, "rss_main.py"],
                 env=env,
@@ -259,7 +371,6 @@ def start_monitor():
                 preexec_fn=os.setsid
             )
         
-        # 保存PID到文件
         pid_file = get_pid_file()
         pid_file.parent.mkdir(exist_ok=True)
         with open(pid_file, 'w') as f:
@@ -282,7 +393,6 @@ def show_monitor_status():
             pid = int(f.read().strip())
         print(f"✓ 监控程序正在运行 (PID: {pid})")
         
-        # 显示日志文件信息
         log_file = Path("data/monitor.log")
         if log_file.exists():
             size = log_file.stat().st_size
@@ -296,29 +406,30 @@ def main():
     """主函数"""
     print_banner()
     
-    # 检查依赖
     if not check_dependencies():
         return
     
     while True:
         show_menu()
-        choice = input("请选择操作 (1-6): ").strip()
+        choice = input("请选择操作 (1-7): ").strip()
         
         if choice == '1':
             setup_telegram()
         elif choice == '2':
             show_config()
         elif choice == '3':
-            start_monitor()
+            manage_sources()
         elif choice == '4':
-            stop_monitor()
+            start_monitor()
         elif choice == '5':
-            show_monitor_status()
+            stop_monitor()
         elif choice == '6':
+            show_monitor_status()
+        elif choice == '7':
             print("再见！")
             break
         else:
             print("无效选择，请重新输入")
 
 if __name__ == "__main__":
-    main() 
+    main()
