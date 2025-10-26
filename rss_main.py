@@ -311,12 +311,9 @@ def fetch_feed_with_fallback(source_url, source_name, source_config, timeout=30)
                 )
     
     if response:
-        status_msg = f'status_{response.status_code}'
-        if response.status_code != 200:
-            status_msg += f' ({response.reason if hasattr(response, "reason") else ""})'
-        return response, status_msg
+        return response, f'status_{response.status_code}'
     
-    return None, error or 'Unknown error (no response received)'
+    return None, error or 'Unknown error'
 
 def check_rss_feed(source, config):
     """检查单个RSS源并匹配关键词"""
@@ -343,7 +340,7 @@ def check_rss_feed(source, config):
             response, method = fetch_feed_with_fallback(source_url, source_name, source, timeout=30)
             
             if response is None:
-                logger.error(f"[{source_name}] 获取RSS失败: {method}")
+                logger.error(f"获取RSS失败: {method}")
                 if attempt < max_retries - 1:
                     current_retry_delay = retry_delay * (attempt + 1)
                     logger.info(f"将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
@@ -352,8 +349,7 @@ def check_rss_feed(source, config):
                 return False
             
             if response.status_code != 200:
-                reason = getattr(response, 'reason', '')
-                logger.error(f"[{source_name}] 获取RSS失败，HTTP状态码: {response.status_code} {reason}")
+                logger.error(f"获取RSS失败，HTTP状态码: {response.status_code}")
                 if attempt < max_retries - 1:
                     current_retry_delay = retry_delay * (attempt + 1)
                     logger.info(f"将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
