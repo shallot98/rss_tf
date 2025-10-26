@@ -240,8 +240,7 @@ def show_menu():
     print("4. 启动监控程序")
     print("5. 停止监控程序")
     print("6. 查看监控状态")
-    print("7. 运行诊断")
-    print("8. 退出")
+    print("7. 退出")
     print()
 
 def show_config():
@@ -439,35 +438,6 @@ def show_monitor_status():
     else:
         print("✗ 监控程序未运行")
 
-def run_diagnostics():
-    """运行RSS诊断程序"""
-    print("\n=== RSS 诊断 ===")
-    print("正在运行诊断程序，这可能需要一些时间...")
-    print()
-    
-    script_path = Path("scripts/collect_errors.py")
-    if not script_path.exists():
-        print("✗ 诊断脚本不存在: scripts/collect_errors.py")
-        return
-    
-    try:
-        result = subprocess.run(
-            [sys.executable, str(script_path)],
-            cwd=Path.cwd(),
-            capture_output=False
-        )
-        
-        print()
-        if result.returncode == 0:
-            print("✓ 诊断完成：所有源均可访问")
-        else:
-            print("✗ 诊断完成：检测到问题")
-        
-        print("\n提示: 诊断报告已保存到 data/errors/<timestamp>/ 目录")
-        
-    except Exception as e:
-        print(f"✗ 运行诊断时出错: {e}")
-
 def main():
     """主函数"""
     print_banner()
@@ -477,7 +447,7 @@ def main():
     
     while True:
         show_menu()
-        choice = input("请选择操作 (1-8): ").strip()
+        choice = input("请选择操作 (1-7): ").strip()
         
         if choice == '1':
             setup_telegram()
@@ -492,8 +462,6 @@ def main():
         elif choice == '6':
             show_monitor_status()
         elif choice == '7':
-            run_diagnostics()
-        elif choice == '8':
             print("再见！")
             break
         else:
