@@ -56,36 +56,6 @@ def check_dependencies():
             print(f"pip install {' '.join(missing_packages)}")
             return False
     
-    config = load_config()
-    sources = config.get('rss_sources', [])
-    needs_cloudscraper = any(
-        source.get('use_cloudscraper', False) or 'linux.do' in source.get('url', '')
-        for source in sources
-    )
-    
-    if needs_cloudscraper:
-        try:
-            import cloudscraper
-            print("✓ cloudscraper 已安装 (用于绕过Cloudflare保护)")
-        except ImportError:
-            print("! cloudscraper 未安装 (可选，用于绕过Cloudflare保护)")
-            print("  检测到以下情况可能需要cloudscraper:")
-            for source in sources:
-                if source.get('use_cloudscraper', False):
-                    print(f"    - {source.get('name')} 配置了 use_cloudscraper")
-                elif 'linux.do' in source.get('url', ''):
-                    print(f"    - {source.get('name')} 使用 linux.do")
-            
-            install = input("\n是否安装cloudscraper? (y/n, 默认y): ").strip().lower()
-            if install != 'n':
-                try:
-                    print("正在安装cloudscraper...")
-                    subprocess.check_call([sys.executable, "-m", "pip", "install", "cloudscraper"])
-                    print("✓ cloudscraper 安装完成")
-                except subprocess.CalledProcessError:
-                    print("✗ cloudscraper 安装失败")
-                    print("  提示: 可以稍后手动安装: pip install cloudscraper")
-    
     print()
     return True
 
@@ -263,10 +233,6 @@ def show_config():
             if kw_count > 0:
                 keywords = source.get('keywords', [])[:3]
                 print(f"   示例: {', '.join(keywords)}{'...' if kw_count > 3 else ''}")
-            if source.get('use_cloudscraper'):
-                print(f"   使用cloudscraper: 是")
-            if source.get('headers'):
-                print(f"   自定义headers: {len(source.get('headers', {}))}个")
     
     settings = config.get('monitor_settings', {})
     print(f"\n监控设置:")
@@ -293,8 +259,6 @@ def manage_sources():
                 print(f"{i}. {source['name']} (ID: {source.get('id', 'N/A')})")
                 print(f"   URL: {source['url']}")
                 print(f"   关键词: {kw_count}个")
-                if source.get('use_cloudscraper'):
-                    print(f"   使用cloudscraper: 是")
         else:
             print("\n当前没有RSS源")
         

@@ -28,13 +28,6 @@ try:
 except ImportError:
     resource = None
 
-try:
-    import cloudscraper
-    CLOUDSCRAPER_AVAILABLE = True
-except ImportError:
-    cloudscraper = None
-    CLOUDSCRAPER_AVAILABLE = False
-
 # 配置文件和日志文件路径
 if os.name == 'nt':
     DATA_DIR = os.path.join(os.getcwd(), 'data')
@@ -202,119 +195,6 @@ def send_telegram_message(message, config, reply_to_message_id=None):
         logger.error(f"Telegram消息发送异常: {e}")
         return False
 
-def create_session(custom_headers=None):
-    """创建带有增强headers的requests session"""
-    session = requests.Session()
-    
-    default_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1'
-    }
-    
-    if custom_headers:
-        default_headers.update(custom_headers)
-    
-    session.headers.update(default_headers)
-    return session
-
-def fetch_feed_with_fallback(source_url, source_name, source_config, timeout=30):
-    """
-    获取RSS feed，支持403错误的fallback策略
-    
-    返回: (response, method_used) 或 (None, error_message)
-    method_used可能是: 'requests', 'cloudscraper', 'fallback_url'
-    """
-    from urllib.parse import urlparse, urlunparse
-    
-    custom_headers = source_config.get('headers', {})
-    use_cloudscraper = source_config.get('use_cloudscraper', False)
-    
-    parsed_url = urlparse(source_url)
-    is_linux_do = 'linux.do' in parsed_url.netloc
-    is_posts_rss = parsed_url.path.endswith('/posts.rss')
-    
-    if parsed_url.netloc:
-        referer = f"{parsed_url.scheme}://{parsed_url.netloc}/"
-        if 'Referer' not in custom_headers:
-            custom_headers['Referer'] = referer
-    
-    session = create_session(custom_headers)
-    
-    def try_fetch(url, method_name):
-        try:
-            logger.info(f"[{source_name}] 尝试使用 {method_name} 获取: {url}")
-            response = session.get(url, timeout=timeout)
-            return response, None
-        except Exception as e:
-            return None, str(e)
-    
-    response, error = try_fetch(source_url, 'requests with enhanced headers')
-    
-    if response and response.status_code == 200:
-        logger.info(f"[{source_name}] ✓ 使用标准requests成功获取feed")
-        return response, 'requests'
-    
-    if response and response.status_code == 403:
-        logger.warning(f"[{source_name}] 收到403 Forbidden响应")
-        
-        if is_linux_do and is_posts_rss:
-            fallback_url = source_url.replace('/posts.rss', '/latest.rss')
-            logger.info(f"[{source_name}] 检测到linux.do /posts.rss，尝试fallback到 /latest.rss")
-            
-            response, error = try_fetch(fallback_url, 'requests with /latest.rss fallback')
-            if response and response.status_code == 200:
-                logger.info(f"[{source_name}] ✓ 使用/latest.rss fallback成功")
-                return response, 'fallback_url'
-            elif response and response.status_code == 403:
-                logger.warning(f"[{source_name}] /latest.rss仍然返回403")
-        
-        if CLOUDSCRAPER_AVAILABLE and (use_cloudscraper or is_linux_do):
-            logger.info(f"[{source_name}] 尝试使用cloudscraper绕过Cloudflare保护")
-            try:
-                scraper = cloudscraper.create_scraper(
-                    browser={
-                        'browser': 'chrome',
-                        'platform': 'windows',
-                        'desktop': True
-                    }
-                )
-                
-                for key, value in custom_headers.items():
-                    scraper.headers[key] = value
-                
-                test_url = fallback_url if (is_linux_do and is_posts_rss) else source_url
-                logger.info(f"[{source_name}] cloudscraper尝试获取: {test_url}")
-                response = scraper.get(test_url, timeout=timeout)
-                
-                if response.status_code == 200:
-                    logger.info(f"[{source_name}] ✓ cloudscraper成功获取feed")
-                    return response, 'cloudscraper'
-                else:
-                    logger.warning(f"[{source_name}] cloudscraper返回状态码: {response.status_code}")
-            except Exception as e:
-                logger.error(f"[{source_name}] cloudscraper失败: {e}")
-        elif not CLOUDSCRAPER_AVAILABLE:
-            if is_linux_do:
-                logger.warning(
-                    f"[{source_name}] cloudscraper未安装。建议:\n"
-                    f"  1. 安装cloudscraper: pip install cloudscraper\n"
-                    f"  2. 或将URL更改为 https://linux.do/latest.rss"
-                )
-            else:
-                logger.warning(
-                    f"[{source_name}] 收到403错误但cloudscraper未安装。\n"
-                    f"  建议安装: pip install cloudscraper"
-                )
-    
-    if response:
-        return response, f'status_{response.status_code}'
-    
-    return None, error or 'Unknown error'
-
 def check_rss_feed(source, config):
     """检查单个RSS源并匹配关键词"""
     source_name = source.get('name', 'Unknown')
@@ -336,17 +216,10 @@ def check_rss_feed(source, config):
     for attempt in range(max_retries):
         try:
             logger.info(f"开始获取 RSS 源 '{source_name}' ({source_url})...")
-            
-            response, method = fetch_feed_with_fallback(source_url, source_name, source, timeout=30)
-            
-            if response is None:
-                logger.error(f"获取RSS失败: {method}")
-                if attempt < max_retries - 1:
-                    current_retry_delay = retry_delay * (attempt + 1)
-                    logger.info(f"将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
-                    time.sleep(current_retry_delay)
-                    continue
-                return False
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(source_url, headers=headers, timeout=30)
             
             if response.status_code != 200:
                 logger.error(f"获取RSS失败，HTTP状态码: {response.status_code}")
