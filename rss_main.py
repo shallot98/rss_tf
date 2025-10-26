@@ -15,12 +15,8 @@ import re
 import random
 import gc
 import psutil
-import hashlib
-import html
 from logging.handlers import RotatingFileHandler
 from threading import Thread, Lock
-from urllib.parse import urlparse
-from email.utils import parsedate_to_datetime
 
 try:
     import readline
@@ -44,7 +40,6 @@ if not os.path.exists(DATA_DIR):
 CONFIG_FILE = os.path.join(DATA_DIR, 'config.json')
 LOG_FILE = os.path.join(DATA_DIR, 'monitor.log')
 PID_FILE = os.path.join(DATA_DIR, 'monitor.pid')
-HTTP_CACHE_FILE = os.path.join(DATA_DIR, 'http_cache.json')
 
 if os.name == 'nt':
     SERVICE_FILE = None
@@ -62,7 +57,6 @@ logger = logging.getLogger(__name__)
 
 # 配置文件锁
 config_lock = Lock()
-http_cache_lock = Lock()
 
 # 默认配置
 DEFAULT_CONFIG = {
@@ -84,10 +78,7 @@ DEFAULT_CONFIG = {
         'check_interval_min': 30,
         'check_interval_max': 60,
         'max_history': 100,
-        'restart_after_checks': 100,
-        'max_concurrent_feeds': 5,
-        'per_feed_min_interval': 60,
-        'enable_media_links': False
+        'restart_after_checks': 100
     }
 }
 
@@ -177,192 +168,6 @@ def save_config(config):
                 except Exception:
                     pass
 
-def load_http_cache():
-    """加载HTTP缓存"""
-    with http_cache_lock:
-        if os.path.exists(HTTP_CACHE_FILE):
-            try:
-                with open(HTTP_CACHE_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"加载HTTP缓存失败: {e}")
-        return {}
-
-def save_http_cache(cache):
-    """保存HTTP缓存"""
-    with http_cache_lock:
-        temp_file = HTTP_CACHE_FILE + '.tmp'
-        try:
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
-            os.replace(temp_file, HTTP_CACHE_FILE)
-        except Exception as e:
-            logger.error(f"保存HTTP缓存失败: {e}")
-        finally:
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception:
-                    pass
-
-def extract_entry_id(entry, source_url):
-    """提取条目ID，带fallback"""
-    if hasattr(entry, 'id') and entry.id:
-        return str(entry.id).strip()
-    
-    if hasattr(entry, 'guid') and entry.guid:
-        return str(entry.guid).strip()
-    
-    if hasattr(entry, 'link') and entry.link:
-        return entry.link.strip()
-    
-    fallback_parts = []
-    if hasattr(entry, 'title') and entry.title:
-        fallback_parts.append(str(entry.title))
-    
-    if hasattr(entry, 'published_parsed') and entry.published_parsed:
-        try:
-            dt = datetime.datetime(*entry.published_parsed[:6])
-            fallback_parts.append(dt.isoformat())
-        except Exception:
-            pass
-    elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-        try:
-            dt = datetime.datetime(*entry.updated_parsed[:6])
-            fallback_parts.append(dt.isoformat())
-        except Exception:
-            pass
-    
-    if fallback_parts:
-        fallback_str = '_'.join(fallback_parts)
-    else:
-        fallback_str = 'no_id_' + str(hash(str(entry)))
-    
-    return hashlib.sha1(fallback_str.encode('utf-8')).hexdigest()
-
-def extract_entry_link(entry):
-    """提取条目链接，优先使用rel='alternate'"""
-    if hasattr(entry, 'links') and entry.links:
-        for link in entry.links:
-            if isinstance(link, dict) and link.get('rel') == 'alternate' and link.get('href'):
-                return link['href'].strip()
-    
-    if hasattr(entry, 'link') and entry.link:
-        return entry.link.strip()
-    
-    return ''
-
-def extract_entry_title(entry):
-    """提取条目标题"""
-    if hasattr(entry, 'title') and entry.title:
-        title = entry.title
-        title = re.sub(r'<[^>]+>', '', title)
-        title = html.unescape(title)
-        title = re.sub(r'\s+', ' ', title).strip()
-        return title
-    return ''
-
-def extract_entry_author(entry):
-    """提取条目作者"""
-    if hasattr(entry, 'author') and entry.author:
-        author = entry.author
-    elif hasattr(entry, 'author_detail') and hasattr(entry.author_detail, 'name') and entry.author_detail.name:
-        author = entry.author_detail.name
-    elif hasattr(entry, 'dc_creator') and entry.dc_creator:
-        author = entry.dc_creator
-    else:
-        author = ''
-    
-    if author:
-        author = re.sub(r'<[^>]+>', '', author)
-        author = html.unescape(author)
-        author = re.sub(r'\s+', ' ', author).strip()
-    
-    return author
-
-def extract_entry_time(entry):
-    """提取条目时间，返回ISO格式字符串或None"""
-    time_struct = None
-    
-    if hasattr(entry, 'published_parsed') and entry.published_parsed:
-        time_struct = entry.published_parsed
-    elif hasattr(entry, 'updated_parsed') and entry.updated_parsed:
-        time_struct = entry.updated_parsed
-    
-    if time_struct:
-        try:
-            dt = datetime.datetime(*time_struct[:6])
-            return dt.isoformat()
-        except Exception:
-            pass
-    
-    return None
-
-def extract_entry_content(entry):
-    """提取条目内容用于显示"""
-    content = ''
-    
-    if hasattr(entry, 'content') and entry.content and len(entry.content) > 0:
-        content = entry.content[0].get('value', '')
-    elif hasattr(entry, 'summary') and entry.summary:
-        content = entry.summary
-    elif hasattr(entry, 'description') and entry.description:
-        content = entry.description
-    
-    if content:
-        content = re.sub(r'<[^>]+>', '', content)
-        content = html.unescape(content)
-        content = re.sub(r'\s+', ' ', content).strip()
-    
-    return content
-
-def extract_entry_media(entry, enable_media_links):
-    """提取条目中的媒体链接"""
-    if not enable_media_links:
-        return []
-    
-    media_links = []
-    
-    if hasattr(entry, 'enclosures') and entry.enclosures:
-        for enc in entry.enclosures:
-            if isinstance(enc, dict) and enc.get('href'):
-                media_links.append(enc['href'])
-    
-    if hasattr(entry, 'media_content') and entry.media_content:
-        for media in entry.media_content:
-            if isinstance(media, dict) and media.get('url'):
-                media_links.append(media['url'])
-    
-    return media_links
-
-def generate_unique_key(entry_id, source_url, title, time_str):
-    """生成唯一键用于去重"""
-    try:
-        parsed = urlparse(source_url)
-        source_host = parsed.netloc or 'unknown'
-    except Exception:
-        source_host = 'unknown'
-    
-    if entry_id and not entry_id.startswith('sha1:'):
-        return f"{source_host}:{entry_id}"
-    
-    fallback_str = f"{title}_{time_str or 'no_time'}"
-    fallback_hash = hashlib.sha1(fallback_str.encode('utf-8')).hexdigest()
-    return f"{source_host}:sha1:{fallback_hash}"
-
-def truncate_for_telegram(text, max_length=4000):
-    """截断文本以符合Telegram限制"""
-    if len(text) <= max_length:
-        return text
-    return text[:max_length-3] + '...'
-
-def html_escape_for_telegram(text):
-    """转义HTML特殊字符用于Telegram"""
-    text = text.replace('&', '&amp;')
-    text = text.replace('<', '&lt;')
-    text = text.replace('>', '&gt;')
-    return text
-
 def send_telegram_message(message, config, reply_to_message_id=None):
     """发送Telegram消息"""
     bot_token = config['telegram']['bot_token']
@@ -391,7 +196,7 @@ def send_telegram_message(message, config, reply_to_message_id=None):
         return False
 
 def check_rss_feed(source, config):
-    """检查单个RSS源并匹配关键词 - 通用RSS/Atom兼容"""
+    """检查单个RSS源并匹配关键词"""
     source_name = source.get('name', 'Unknown')
     source_url = source.get('url', '')
     keywords = source.get('keywords', [])
@@ -405,132 +210,122 @@ def check_rss_feed(source, config):
         return False
     
     max_retries = 3
-    base_retry_delay = 10
+    retry_delay = 10
     config_changed = False
-    http_cache = load_http_cache()
-    cache_key = source_url
-    enable_media_links = config.get('monitor_settings', {}).get('enable_media_links', False)
     
     for attempt in range(max_retries):
         try:
-            logger.info(f"[{source_name}] 开始获取RSS源 ({source_url})...")
-            
+            logger.info(f"开始获取 RSS 源 '{source_name}' ({source_url})...")
             headers = {
-                'User-Agent': 'Mozilla/5.0 (compatible; RSS-TF-Monitor/1.0; +https://github.com/rss-monitor)',
-                'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
-                'Accept-Encoding': 'gzip, deflate'
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
-            
-            cache_entry = http_cache.get(cache_key, {})
-            if cache_entry.get('etag'):
-                headers['If-None-Match'] = cache_entry['etag']
-            if cache_entry.get('last_modified'):
-                headers['If-Modified-Since'] = cache_entry['last_modified']
-            
             response = requests.get(source_url, headers=headers, timeout=30)
             
-            logger.info(f"[{source_name}] HTTP状态码: {response.status_code}")
-            
-            if response.status_code == 304:
-                logger.info(f"[{source_name}] 内容未修改 (304)，跳过处理")
-                return True
-            
-            if response.status_code == 429:
-                retry_after = response.headers.get('Retry-After', str(base_retry_delay * 2))
-                try:
-                    wait_time = int(retry_after)
-                except ValueError:
-                    try:
-                        retry_date = parsedate_to_datetime(retry_after)
-                        wait_time = max(0, (retry_date - datetime.datetime.now(retry_date.tzinfo)).total_seconds())
-                    except Exception:
-                        wait_time = base_retry_delay * 2
-                
-                logger.warning(f"[{source_name}] 触发速率限制 (429)，等待 {wait_time}秒")
-                if attempt < max_retries - 1:
-                    time.sleep(wait_time)
-                    continue
-                return False
-            
-            if response.status_code == 503:
-                retry_after = response.headers.get('Retry-After')
-                if retry_after:
-                    try:
-                        wait_time = int(retry_after)
-                        logger.warning(f"[{source_name}] 服务不可用 (503)，Retry-After: {wait_time}秒")
-                        if attempt < max_retries - 1 and wait_time < 300:
-                            time.sleep(wait_time)
-                            continue
-                    except ValueError:
-                        pass
-                
-                if attempt < max_retries - 1:
-                    current_retry_delay = base_retry_delay * (2 ** attempt) + random.uniform(0, 5)
-                    logger.info(f"[{source_name}] 等待 {current_retry_delay:.2f}秒后重试")
-                    time.sleep(current_retry_delay)
-                    continue
-                return False
-            
             if response.status_code != 200:
-                logger.error(f"[{source_name}] 获取RSS失败，HTTP状态码: {response.status_code}")
+                logger.error(f"获取RSS失败，HTTP状态码: {response.status_code}")
                 if attempt < max_retries - 1:
-                    current_retry_delay = base_retry_delay * (2 ** attempt) + random.uniform(0, 5)
-                    logger.info(f"[{source_name}] 将在{current_retry_delay:.2f}秒后重试 ({attempt+1}/{max_retries})")
+                    current_retry_delay = retry_delay * (attempt + 1)
+                    logger.info(f"将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
                     time.sleep(current_retry_delay)
                     continue
                 return False
             
-            if 'etag' in response.headers:
-                http_cache[cache_key] = http_cache.get(cache_key, {})
-                http_cache[cache_key]['etag'] = response.headers['etag']
-            
-            if 'last-modified' in response.headers:
-                http_cache[cache_key] = http_cache.get(cache_key, {})
-                http_cache[cache_key]['last_modified'] = response.headers['last-modified']
-            
-            save_http_cache(http_cache)
-            
-            logger.info(f"[{source_name}] 开始解析RSS/Atom内容...")
-            
-            response.encoding = response.apparent_encoding or 'utf-8'
+            logger.info(f"开始解析 RSS 源 '{source_name}' 内容...")
             feed = feedparser.parse(response.content)
             
-            if hasattr(feed, 'bozo') and feed.bozo:
-                logger.warning(f"[{source_name}] Feed解析警告: {getattr(feed, 'bozo_exception', 'Unknown')}")
-            
             if not hasattr(feed, 'entries') or not feed.entries:
-                logger.error(f"[{source_name}] 解析失败或没有找到条目")
+                logger.error(f"RSS 源 '{source_name}' 解析失败或没有找到条目")
                 if attempt < max_retries - 1:
-                    current_retry_delay = base_retry_delay * (2 ** attempt) + random.uniform(0, 5)
-                    logger.info(f"[{source_name}] 将在{current_retry_delay:.2f}秒后重试 ({attempt+1}/{max_retries})")
+                    current_retry_delay = retry_delay * (attempt + 1)
+                    logger.info(f"将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
                     time.sleep(current_retry_delay)
                     continue
                 return False
             
-            logger.info(f"[{source_name}] 成功获取，共 {len(feed.entries)} 条")
+            logger.info(f"成功获取 RSS 源 '{source_name}'，共找到 {len(feed.entries)} 条帖子")
             
             notified_posts = set(source.get('notified_posts', []))
+            notified_authors = set(source.get('notified_authors', []))
             
             for entry in feed.entries:
                 try:
-                    title = extract_entry_title(entry)
-                    link = extract_entry_link(entry)
-                    author = extract_entry_author(entry)
-                    time_str = extract_entry_time(entry)
-                    entry_id = extract_entry_id(entry, source_url)
-                    content = extract_entry_content(entry)
-                    media_links = extract_entry_media(entry, enable_media_links)
+                    title = entry.title if hasattr(entry, 'title') else ''
+                    link = entry.link if hasattr(entry, 'link') else ''
                     
-                    if not title:
-                        logger.debug(f"[{source_name}] 跳过无标题条目")
+                    author = ''
+                    if hasattr(entry, 'author') and entry.author:
+                        author = entry.author
+                    elif hasattr(entry, 'author_detail') and entry.author_detail:
+                        author = entry.author_detail.get('name', '')
+                    elif hasattr(entry, 'dc_creator') and entry.dc_creator:
+                        author = entry.dc_creator
+                    elif hasattr(entry, 'summary') and entry.summary:
+                        summary_match = re.search(r'作者[：:]\s*([^<\n\r]+)', entry.summary)
+                        if summary_match:
+                            author = summary_match.group(1).strip()
+                    
+                    if not author and hasattr(entry, 'tags') and entry.tags:
+                        for tag in entry.tags:
+                            if hasattr(tag, 'term') and '作者' in tag.term:
+                                author = tag.term.replace('作者:', '').replace('作者：', '').strip()
+                                break
+                    
+                    if not title or not link:
+                        logger.warning("跳过缺少标题或链接的条目")
                         continue
                     
-                    unique_key = generate_unique_key(entry_id, source_url, title, time_str)
+                    title = re.sub(r'<[^>]+>', '', title).strip()
+                    title = re.sub(r'\s+', ' ', title)
                     
-                    logger.debug(f"[{source_name}] 处理条目: title='{title[:50]}...' unique_key={unique_key}")
+                    if author:
+                        author = re.sub(r'<[^>]+>', '', author).strip()
+                        author = re.sub(r'\s+', ' ', author)
+                    else:
+                        author = '未知'
+                    
+                    logger.debug(f"[{source_name}] 处理帖子: 标题='{title}', 作者='{author}', 链接={link}")
+                    
+                    post_id = None
+                    post_id_patterns = [
+                        r'/post-(\d+)',
+                        r'/post/(\d+)',
+                        r'/topic/(\d+)',
+                        r'/thread/(\d+)',
+                        r'-(\d+)$'
+                    ]
+                    
+                    for pattern in post_id_patterns:
+                        match = re.search(pattern, link)
+                        if match:
+                            post_id = match.group(1)
+                            break
+                    
+                    if not post_id and hasattr(entry, 'guid') and entry.guid:
+                        guid_str = str(entry.guid).strip()
+                        guid_match = re.search(r'(\d+)', guid_str)
+                        if guid_match:
+                            post_id = guid_match.group(1)
+                    
+                    if author and author != '未知':
+                        author_cleaned = re.sub(r'[\s\u3000\u00A0]+', '', author)
+                        author_cleaned = re.sub(r'[^\w\u4e00-\u9fff]', '', author_cleaned)
+                        author_normalized = author_cleaned.lower()
+                    else:
+                        author_normalized = 'unknown'
+                    
+                    logger.debug(f"[{source_name}] 作者名标准化: '{author}' -> '{author_normalized}'")
+                    
+                    if post_id:
+                        unique_key = f"{post_id}_{author_normalized}"
+                    else:
+                        import hashlib
+                        link_hash = hashlib.md5(link.encode()).hexdigest()[:8]
+                        unique_key = f"{link_hash}_{author_normalized}"
+                    
+                    logger.info(f"[{source_name}] 生成unique_key: {unique_key}")
                     
                     if unique_key in notified_posts:
-                        logger.debug(f"[{source_name}] 已通知，跳过: {unique_key}")
+                        logger.info(f"[{source_name}] ✅ 跳过已通知过的帖子: {unique_key}")
                         continue
                     
                     matched_keywords = []
@@ -542,74 +337,48 @@ def check_rss_feed(source, config):
                         notified_posts.add(unique_key)
                         config_changed = True
                         
-                        message_parts = [f"<b>来源：{html_escape_for_telegram(source_name)}</b>"]
-                        message_parts.append(f"标题：{html_escape_for_telegram(title)}")
-                        message_parts.append(f"关键词：{html_escape_for_telegram(', '.join(matched_keywords))}")
-                        
-                        if author:
-                            message_parts.append(f"作者：{html_escape_for_telegram(author)}")
-                        
-                        if time_str:
-                            try:
-                                dt = datetime.datetime.fromisoformat(time_str)
-                                formatted_time = dt.strftime('%Y-%m-%d %H:%M:%S')
-                                message_parts.append(f"时间：{formatted_time}")
-                            except Exception:
-                                pass
-                        
-                        if content:
-                            summary = content[:200] if len(content) > 200 else content
-                            message_parts.append(f"摘要：{html_escape_for_telegram(summary)}")
-                        
-                        if link:
-                            message_parts.append(f"链接：{link}")
-                        
-                        if media_links:
-                            message_parts.append(f"媒体：{', '.join(media_links[:3])}")
-                        
-                        message = '\n'.join(message_parts)
-                        message = truncate_for_telegram(message, 4000)
+                        message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author}\n链接：{link}"
                         
                         if send_telegram_message(message, config):
-                            logger.info(f"[{source_name}] 匹配关键词 {matched_keywords}，已发送通知: {title[:50]}")
+                            logger.info(f"[{source_name}] 检测到关键词 '{', '.join(matched_keywords)}' 在帖子 '{title}' 并成功发送通知")
                         else:
-                            logger.error(f"[{source_name}] 发送通知失败: {title[:50]}")
+                            logger.error(f"[{source_name}] 发送通知失败，帖子标题: {title}")
                             notified_posts.discard(unique_key)
                             config_changed = False
                 
                 except Exception as e:
-                    logger.error(f"[{source_name}] 处理条目时出错: {str(e)}", exc_info=True)
+                    logger.error(f"[{source_name}] 处理RSS条目时出错: {str(e)}")
                     continue
             
             if config_changed:
                 max_history = config.get('monitor_settings', {}).get('max_history', 100)
                 source['notified_posts'] = list(notified_posts)[-max_history:]
+                source['notified_authors'] = list(notified_authors)[-max_history:]
                 save_config(config)
             
             return True
             
         except requests.exceptions.Timeout:
-            logger.error(f"[{source_name}] 获取超时 (尝试 {attempt+1}/{max_retries})")
+            logger.error(f"[{source_name}] 获取RSS超时 (尝试 {attempt+1}/{max_retries})")
         except requests.exceptions.ConnectionError:
-            logger.error(f"[{source_name}] 连接失败 (尝试 {attempt+1}/{max_retries})")
+            logger.error(f"[{source_name}] 连接RSS服务器失败 (尝试 {attempt+1}/{max_retries})")
         except Exception as e:
-            logger.error(f"[{source_name}] 检查时出错: {str(e)} (尝试 {attempt+1}/{max_retries})", exc_info=True)
+            logger.error(f"[{source_name}] 检查RSS时出错: {str(e)} (尝试 {attempt+1}/{max_retries})")
         
         if attempt < max_retries - 1:
-            current_retry_delay = base_retry_delay * (2 ** attempt) + random.uniform(0, 5)
-            logger.info(f"[{source_name}] 等待{current_retry_delay:.2f}秒后重试 ({attempt+1}/{max_retries})")
+            current_retry_delay = retry_delay * (attempt + 1)
+            logger.info(f"[{source_name}] 将在{current_retry_delay}秒后重试 ({attempt+1}/{max_retries})")
             time.sleep(current_retry_delay)
     
     return False
 
 def monitor_loop():
-    """监控主循环 - 支持per-feed轮询和并发控制"""
+    """监控主循环"""
     logger.info("开始RSS监控")
     
     consecutive_errors = 0
     max_consecutive_errors = 5
     detection_counter = 0
-    feed_last_check = {}
 
     try:
         while True:
@@ -618,8 +387,6 @@ def monitor_loop():
             min_interval = monitor_settings.get('check_interval_min', 30)
             max_interval = monitor_settings.get('check_interval_max', 60)
             max_detections = monitor_settings.get('restart_after_checks', 100)
-            per_feed_min_interval = monitor_settings.get('per_feed_min_interval', 60)
-            max_concurrent = monitor_settings.get('max_concurrent_feeds', 5)
             
             rss_sources = config.get('rss_sources', [])
             
@@ -629,52 +396,10 @@ def monitor_loop():
                 continue
             
             try:
-                current_time = time.time()
-                sources_to_check = []
-                
                 for source in rss_sources:
-                    source_id = source.get('id', source.get('name', 'unknown'))
-                    last_check = feed_last_check.get(source_id, 0)
-                    
-                    if current_time - last_check >= per_feed_min_interval:
-                        sources_to_check.append(source)
-                
-                if not sources_to_check:
-                    wait_time = 10
-                    logger.debug(f"所有源都在最小间隔内，等待{wait_time}秒")
-                    time.sleep(wait_time)
-                    continue
-                
-                logger.info(f"本次检查 {len(sources_to_check)} 个源")
-                
-                for i in range(0, len(sources_to_check), max_concurrent):
-                    batch = sources_to_check[i:i+max_concurrent]
-                    threads = []
-                    
-                    for source in batch:
-                        source_name = source.get('name', 'Unknown')
-                        source_id = source.get('id', source_name)
-                        logger.info(f"开始检查RSS源: {source_name}")
-                        
-                        def check_wrapper(src, cfg):
-                            try:
-                                check_rss_feed(src, cfg)
-                            except Exception as e:
-                                logger.error(f"检查源 {src.get('name', 'Unknown')} 失败: {e}")
-                        
-                        t = Thread(target=check_wrapper, args=(source, config))
-                        t.start()
-                        threads.append(t)
-                        
-                        feed_last_check[source_id] = current_time + random.uniform(0, 5)
-                    
-                    for t in threads:
-                        t.join(timeout=120)
-                    
-                    if i + max_concurrent < len(sources_to_check):
-                        inter_batch_delay = random.uniform(2, 5)
-                        logger.debug(f"批次间隔 {inter_batch_delay:.2f}秒")
-                        time.sleep(inter_batch_delay)
+                    source_name = source.get('name', 'Unknown')
+                    logger.info(f"开始检查RSS源: {source_name}")
+                    check_rss_feed(source, config)
                 
                 consecutive_errors = 0
                 detection_counter += 1
@@ -689,7 +414,7 @@ def monitor_loop():
                     
             except Exception as e:
                 consecutive_errors += 1
-                logger.error(f"RSS监控异常: {e}", exc_info=True)
+                logger.error(f"RSS监控异常: {e}")
                 
                 if consecutive_errors >= max_consecutive_errors:
                     logger.warning(f"连续出现{consecutive_errors}次错误，增加检查间隔")
@@ -707,7 +432,7 @@ def monitor_loop():
     except KeyboardInterrupt:
         logger.info("监控被用户中断")
     except Exception as e:
-        logger.error(f"监控循环严重异常: {e}", exc_info=True)
+        logger.error(f"监控循环严重异常: {e}")
     finally:
         if os.path.exists(PID_FILE):
             os.remove(PID_FILE)
