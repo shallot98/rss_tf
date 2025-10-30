@@ -70,8 +70,7 @@ DEFAULT_CONFIG = {
             'name': 'NodeSeek',
             'url': 'https://rss.nodeseek.com/',
             'keywords': [],
-            'notified_posts': [],
-            'notified_authors': []
+            'notified_posts': []
         }
     ],
     'monitor_settings': {
@@ -136,8 +135,6 @@ def save_config(config):
                 max_history = config.get('monitor_settings', {}).get('max_history', 100)
                 if len(source.get('notified_posts', [])) > max_history:
                     source['notified_posts'] = source['notified_posts'][-max_history:]
-                if len(source.get('notified_authors', [])) > max_history:
-                    source['notified_authors'] = source['notified_authors'][-max_history:]
             
             with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
@@ -245,7 +242,7 @@ def check_rss_feed(source, config):
             logger.info(f"成功获取 RSS 源 '{source_name}'，共找到 {len(feed.entries)} 条帖子")
             
             notified_posts = set(source.get('notified_posts', []))
-            notified_authors = set(source.get('notified_authors', []))
+            newly_notified = []
             
             for entry in feed.entries:
                 try:
@@ -334,27 +331,25 @@ def check_rss_feed(source, config):
                             matched_keywords.append(keyword)
                     
                     if matched_keywords:
-                        notified_posts.add(unique_key)
-                        config_changed = True
-                        
                         message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author}\n链接：{link}"
                         
                         if send_telegram_message(message, config):
                             logger.info(f"[{source_name}] 检测到关键词 '{', '.join(matched_keywords)}' 在帖子 '{title}' 并成功发送通知")
+                            notified_posts.add(unique_key)
+                            newly_notified.append(unique_key)
+                            config_changed = True
                         else:
                             logger.error(f"[{source_name}] 发送通知失败，帖子标题: {title}")
-                            notified_posts.discard(unique_key)
-                            config_changed = False
                 
                 except Exception as e:
                     logger.error(f"[{source_name}] 处理RSS条目时出错: {str(e)}")
                     continue
             
-            if config_changed:
+            if config_changed and newly_notified:
                 max_history = config.get('monitor_settings', {}).get('max_history', 100)
                 source['notified_posts'] = list(notified_posts)[-max_history:]
-                source['notified_authors'] = list(notified_authors)[-max_history:]
                 save_config(config)
+                logger.info(f"[{source_name}] 已保存 {len(newly_notified)} 个新通知记录")
             
             return True
             
@@ -498,39 +493,53 @@ def telegram_command_listener():
                                 'name': name,
                                 'url': url_part,
                                 'keywords': [],
-                                'notified_posts': [],
-                                'notified_authors': []
+                                'notified_posts': []
                             }
                             config['rss_sources'].append(new_source)
                             save_config(config)
                             send_telegram_message(f"✓ 已添加源: {name}\nURL: {url_part}\nID: {source_id}", config, msg_id)
                         
                         elif text.startswith("/delsource "):
-                            name = text[11:].strip()
-                            if not name:
-                                send_telegram_message("用法: /delsource <name>", config, msg_id)
+                            identifier = text[11:].strip()
+                            if not identifier:
+                                send_telegram_message("用法: /delsource &lt;序号或名称&gt;", config, msg_id)
                                 continue
                             
-                            source = get_source_by_id_or_name(config, name)
-                            if not source:
-                                send_telegram_message(f"源 '{name}' 不存在", config, msg_id)
+                            sources = config.get('rss_sources', [])
+                            source_to_delete = None
+                            
+                            if identifier.isdigit():
+                                idx = int(identifier)
+                                if 1 <= idx <= len(sources):
+                                    source_to_delete = sources[idx - 1]
+                                else:
+                                    send_telegram_message(f"✗ 序号 {idx} 无效，请使用 /listsources 查看", config, msg_id)
+                                    continue
+                            else:
+                                source_to_delete = get_source_by_id_or_name(config, identifier)
+                            
+                            if not source_to_delete:
+                                send_telegram_message(f"源 '{identifier}' 不存在", config, msg_id)
                                 continue
                             
-                            config['rss_sources'].remove(source)
+                            config['rss_sources'].remove(source_to_delete)
                             save_config(config)
-                            send_telegram_message(f"✓ 已删除源: {source['name']}", config, msg_id)
+                            send_telegram_message(f"✓ 已删除源: {source_to_delete['name']}", config, msg_id)
                         
                         elif text.startswith("/listsources"):
                             sources = config.get('rss_sources', [])
                             if not sources:
                                 send_telegram_message("当前没有配置任何RSS源", config, msg_id)
                             else:
-                                lines = ["<b>RSS源列表:</b>"]
+                                lines = ["<b>RSS源列表:</b>", ""]
                                 for i, source in enumerate(sources, 1):
                                     kw_count = len(source.get('keywords', []))
-                                    lines.append(f"{i}. <b>{source['name']}</b> (ID: {source['id']})")
-                                    lines.append(f"   URL: {source['url']}")
-                                    lines.append(f"   关键词: {kw_count}个")
+                                    lines.append(f"<b>[{i}]</b> {source['name']}")
+                                    lines.append(f"    ID: {source['id']}")
+                                    lines.append(f"    URL: {source['url']}")
+                                    lines.append(f"    关键词: {kw_count}个")
+                                    lines.append("")
+                                lines.append("💡 删除源可使用: /delsource &lt;序号或名称&gt;")
                                 send_telegram_message('\n'.join(lines), config, msg_id)
                         
                         elif text.startswith("/add "):
@@ -558,10 +567,10 @@ def telegram_command_listener():
                         elif text.startswith("/del "):
                             parts = text[5:].strip().split(None, 1)
                             if len(parts) < 2:
-                                send_telegram_message("用法: /del <source_name> <keyword>", config, msg_id)
+                                send_telegram_message("用法: /del &lt;source_name&gt; &lt;序号或关键词&gt;", config, msg_id)
                                 continue
                             
-                            source_name, keyword = parts[0], parts[1]
+                            source_name, keyword_identifier = parts[0], parts[1]
                             source = get_source_by_id_or_name(config, source_name)
                             
                             if not source:
@@ -569,15 +578,26 @@ def telegram_command_listener():
                                 continue
                             
                             keywords = source.get('keywords', [])
-                            to_remove = [k for k in keywords if k.lower() == keyword.lower()]
+                            keyword_to_remove = None
                             
-                            if to_remove:
-                                for k in to_remove:
-                                    source['keywords'].remove(k)
-                                save_config(config)
-                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除关键词: {keyword}", config, msg_id)
+                            if keyword_identifier.isdigit():
+                                idx = int(keyword_identifier)
+                                if 1 <= idx <= len(keywords):
+                                    keyword_to_remove = keywords[idx - 1]
+                                else:
+                                    send_telegram_message(f"✗ 序号 {idx} 无效\n使用 /list {source['name']} 查看关键词列表", config, msg_id)
+                                    continue
                             else:
-                                send_telegram_message(f"关键词 '{keyword}' 在源 '{source['name']}' 中不存在", config, msg_id)
+                                matching = [k for k in keywords if k.lower() == keyword_identifier.lower()]
+                                if matching:
+                                    keyword_to_remove = matching[0]
+                            
+                            if keyword_to_remove:
+                                source['keywords'].remove(keyword_to_remove)
+                                save_config(config)
+                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除关键词: {keyword_to_remove}", config, msg_id)
+                            else:
+                                send_telegram_message(f"关键词 '{keyword_identifier}' 在源 '{source['name']}' 中不存在", config, msg_id)
                         
                         elif text.startswith("/list "):
                             source_name = text[6:].strip()
@@ -591,8 +611,12 @@ def telegram_command_listener():
                             if not keywords:
                                 send_telegram_message(f"源 '{source['name']}' 没有设置任何关键词", config, msg_id)
                             else:
-                                kw_list = '\n'.join([f"{i+1}. {k}" for i, k in enumerate(keywords)])
-                                send_telegram_message(f"<b>{source['name']}</b> 的关键词列表:\n{kw_list}", config, msg_id)
+                                kw_list = '\n'.join([f"<b>[{i+1}]</b> {k}" for i, k in enumerate(keywords)])
+                                send_telegram_message(
+                                    f"<b>{source['name']}</b> 的关键词列表:\n{kw_list}\n\n"
+                                    f"💡 删除关键词可使用: /del {source['name']} &lt;序号或关键词&gt;",
+                                    config, msg_id
+                                )
                         
                         elif text.startswith("/list"):
                             sources = config.get('rss_sources', [])
@@ -615,13 +639,16 @@ def telegram_command_listener():
                                 "<b>RSS 监控机器人指令:</b>\n\n"
                                 "<b>源管理:</b>\n"
                                 "/addsource &lt;url&gt; &lt;name&gt; - 添加RSS源\n"
-                                "/delsource &lt;name&gt; - 删除RSS源\n"
+                                "/delsource &lt;序号或名称&gt; - 删除RSS源\n"
                                 "/listsources - 列出所有RSS源\n\n"
                                 "<b>关键词管理:</b>\n"
                                 "/add &lt;source_name&gt; &lt;keyword&gt; - 添加关键词\n"
-                                "/del &lt;source_name&gt; &lt;keyword&gt; - 删除关键词\n"
+                                "/del &lt;source_name&gt; &lt;序号或关键词&gt; - 删除关键词\n"
                                 "/list &lt;source_name&gt; - 列出指定源的关键词\n"
                                 "/list - 列出所有源的关键词\n\n"
+                                "<b>提示:</b>\n"
+                                "• 删除时可使用序号或名称/关键词\n"
+                                "• 使用 /listsources 或 /list 查看序号\n\n"
                                 "/help - 查看帮助"
                             )
                             send_telegram_message(help_msg, config, msg_id)

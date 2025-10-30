@@ -93,8 +93,7 @@ def load_config():
                 'name': 'NodeSeek',
                 'url': 'https://rss.nodeseek.com/',
                 'keywords': [],
-                'notified_posts': [],
-                'notified_authors': []
+                'notified_posts': []
             }
         ],
         'monitor_settings': {
@@ -291,8 +290,7 @@ def manage_sources():
                 'name': name,
                 'url': url,
                 'keywords': [],
-                'notified_posts': [],
-                'notified_authors': []
+                'notified_posts': []
             }
             config['rss_sources'].append(new_source)
             
