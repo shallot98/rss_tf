@@ -55,14 +55,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import deduplication module (after logger is configured)
-try:
-    from dedup import generate_dedup_key, DedupHistory, normalize_url
-except ImportError as e:
-    logger.error(f"Failed to import dedup module: {e}")
-    print("ERROR: Failed to import dedup module. Make sure dedup.py is in the same directory.")
-    sys.exit(1)
-
 # 配置文件锁
 config_lock = Lock()
 
@@ -85,10 +77,7 @@ DEFAULT_CONFIG = {
         'check_interval_min': 30,
         'check_interval_max': 60,
         'max_history': 100,
-        'restart_after_checks': 100,
-        'dedup_history_size': 1000,
-        'dedup_debounce_hours': 24,
-        'enable_debug_logging': False
+        'restart_after_checks': 100
     }
 }
 
@@ -136,7 +125,7 @@ def load_config():
         return config
 
 def save_config(config):
-    """保存配置文件（原子写入，带fsync）"""
+    """保存配置文件"""
     with config_lock:
         backup_file = CONFIG_FILE + '.bak'
         temp_file = CONFIG_FILE + '.tmp'
@@ -147,14 +136,9 @@ def save_config(config):
                 if len(source.get('notified_posts', [])) > max_history:
                     source['notified_posts'] = source['notified_posts'][-max_history:]
             
-            # Write to temp file with fsync for durability
             with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, ensure_ascii=False, indent=2)
-                f.flush()
-                # Ensure data is written to disk
-                os.fsync(f.fileno())
             
-            # Backup existing config before replacing
             if os.path.exists(CONFIG_FILE):
                 try:
                     import shutil
@@ -162,7 +146,6 @@ def save_config(config):
                 except Exception as e:
                     logger.warning(f"创建配置文件备份失败: {e}")
             
-            # Atomic rename
             os.replace(temp_file, CONFIG_FILE)
             gc.collect()
             
@@ -209,53 +192,11 @@ def send_telegram_message(message, config, reply_to_message_id=None):
         logger.error(f"Telegram消息发送异常: {e}")
         return False
 
-def load_dedup_history(source: dict, config: dict) -> DedupHistory:
-    """
-    Load deduplication history from source config.
-    Migrates from old notified_posts format if needed.
-    """
-    monitor_settings = config.get('monitor_settings', {})
-    max_size = monitor_settings.get('dedup_history_size', 1000)
-    debounce_hours = monitor_settings.get('dedup_debounce_hours', 24)
-    
-    dedup_hist = DedupHistory(max_size=max_size, debounce_hours=debounce_hours)
-    
-    # Try to load from new format (dict with timestamps)
-    if 'dedup_history' in source and isinstance(source['dedup_history'], dict):
-        try:
-            dedup_hist.from_dict(source['dedup_history'])
-            logger.debug(f"Loaded {dedup_hist.size()} entries from dedup_history")
-        except Exception as e:
-            logger.warning(f"Failed to load dedup_history: {e}, starting fresh")
-    
-    # Migrate from old notified_posts format (list of keys without timestamps)
-    elif 'notified_posts' in source and isinstance(source['notified_posts'], list):
-        logger.info("Migrating from old notified_posts format to dedup_history")
-        current_time = time.time()
-        # Assume old entries were seen "now" to avoid re-sending
-        migrated_history = {key: current_time for key in source['notified_posts'] if key}
-        dedup_hist.from_dict(migrated_history, current_time)
-        logger.info(f"Migrated {dedup_hist.size()} entries from notified_posts")
-    
-    return dedup_hist
-
-def save_dedup_history(source: dict, dedup_hist: DedupHistory):
-    """
-    Save deduplication history to source config.
-    Also maintains backward-compatible notified_posts for migration.
-    """
-    source['dedup_history'] = dedup_hist.to_dict()
-    # Keep backward-compatible notified_posts list
-    source['notified_posts'] = list(dedup_hist.history.keys())
-
 def check_rss_feed(source, config):
-    """检查单个RSS源并匹配关键词（使用改进的去重逻辑）"""
+    """检查单个RSS源并匹配关键词"""
     source_name = source.get('name', 'Unknown')
     source_url = source.get('url', '')
     keywords = source.get('keywords', [])
-    
-    monitor_settings = config.get('monitor_settings', {})
-    enable_debug = monitor_settings.get('enable_debug_logging', False)
     
     if not keywords:
         logger.info(f"源 '{source_name}' 没有设置关键词，跳过检查")
@@ -264,13 +205,6 @@ def check_rss_feed(source, config):
     if not source_url:
         logger.error(f"源 '{source_name}' 没有设置URL")
         return False
-    
-    # Load deduplication history
-    dedup_hist = load_dedup_history(source, config)
-    current_time = time.time()
-    
-    # Cleanup old entries before processing
-    dedup_hist.cleanup_old_entries(current_time)
     
     max_retries = 3
     retry_delay = 10
@@ -307,17 +241,14 @@ def check_rss_feed(source, config):
             
             logger.info(f"成功获取 RSS 源 '{source_name}'，共找到 {len(feed.entries)} 条帖子")
             
-            # Track keys sent in this cycle to ensure single-send per item
-            sent_in_this_cycle = set()
+            notified_posts = set(source.get('notified_posts', []))
             newly_notified = []
             
             for entry in feed.entries:
                 try:
-                    # Extract basic fields
                     title = entry.title if hasattr(entry, 'title') else ''
                     link = entry.link if hasattr(entry, 'link') else ''
                     
-                    # Extract author from various possible fields
                     author = ''
                     if hasattr(entry, 'author') and entry.author:
                         author = entry.author
@@ -336,88 +267,89 @@ def check_rss_feed(source, config):
                                 author = tag.term.replace('作者:', '').replace('作者：', '').strip()
                                 break
                     
-                    # Clean HTML from title and author
-                    if title:
-                        title = re.sub(r'<[^>]+>', '', title).strip()
-                        title = re.sub(r'\s+', ' ', title)
+                    if not title or not link:
+                        logger.warning("跳过缺少标题或链接的条目")
+                        continue
+                    
+                    title = re.sub(r'<[^>]+>', '', title).strip()
+                    title = re.sub(r'\s+', ' ', title)
                     
                     if author:
                         author = re.sub(r'<[^>]+>', '', author).strip()
                         author = re.sub(r'\s+', ' ', author)
+                    else:
+                        author = '未知'
                     
-                    if not title or not link:
-                        logger.warning(f"[{source_name}] 跳过缺少标题或链接的条目")
+                    logger.debug(f"[{source_name}] 处理帖子: 标题='{title}', 作者='{author}', 链接={link}")
+                    
+                    post_id = None
+                    post_id_patterns = [
+                        r'/post-(\d+)',
+                        r'/post/(\d+)',
+                        r'/topic/(\d+)',
+                        r'/thread/(\d+)',
+                        r'-(\d+)$'
+                    ]
+                    
+                    for pattern in post_id_patterns:
+                        match = re.search(pattern, link)
+                        if match:
+                            post_id = match.group(1)
+                            break
+                    
+                    if not post_id and hasattr(entry, 'guid') and entry.guid:
+                        guid_str = str(entry.guid).strip()
+                        guid_match = re.search(r'(\d+)', guid_str)
+                        if guid_match:
+                            post_id = guid_match.group(1)
+                    
+                    if author and author != '未知':
+                        author_cleaned = re.sub(r'[\s\u3000\u00A0]+', '', author)
+                        author_cleaned = re.sub(r'[^\w\u4e00-\u9fff]', '', author_cleaned)
+                        author_normalized = author_cleaned.lower()
+                    else:
+                        author_normalized = 'unknown'
+                    
+                    logger.debug(f"[{source_name}] 作者名标准化: '{author}' -> '{author_normalized}'")
+                    
+                    if post_id:
+                        unique_key = f"{post_id}_{author_normalized}"
+                    else:
+                        import hashlib
+                        link_hash = hashlib.md5(link.encode()).hexdigest()[:8]
+                        unique_key = f"{link_hash}_{author_normalized}"
+                    
+                    logger.info(f"[{source_name}] 生成unique_key: {unique_key}")
+                    
+                    if unique_key in notified_posts:
+                        logger.info(f"[{source_name}] ✅ 跳过已通知过的帖子: {unique_key}")
                         continue
                     
-                    # Use new dedup key generation
-                    dedup_key, debug_info = generate_dedup_key(entry)
-                    
-                    if not dedup_key:
-                        logger.warning(f"[{source_name}] 无法生成dedup_key，跳过: title='{title}'")
-                        continue
-                    
-                    # Debug logging
-                    if enable_debug:
-                        logger.debug(f"[{source_name}] Entry analysis:")
-                        logger.debug(f"  Title: {title}")
-                        logger.debug(f"  Link: {link}")
-                        logger.debug(f"  Author: {author}")
-                        logger.debug(f"  Dedup key: {dedup_key}")
-                        logger.debug(f"  Key type: {debug_info.get('key_type')}")
-                        if 'link_normalized' in debug_info:
-                            logger.debug(f"  Normalized link: {debug_info['link_normalized']}")
-                    
-                    # Check for duplicates
-                    is_dup, dup_reason = dedup_hist.is_duplicate(dedup_key, current_time)
-                    
-                    if is_dup:
-                        logger.info(f"[{source_name}] ⏭️ 跳过重复项: {dedup_key} ({dup_reason})")
-                        if enable_debug:
-                            logger.debug(f"  Title was: {title}")
-                        continue
-                    
-                    # Check if already sent in this cycle (multi-keyword protection)
-                    if dedup_key in sent_in_this_cycle:
-                        logger.info(f"[{source_name}] ⏭️ 本轮已发送，跳过: {dedup_key}")
-                        continue
-                    
-                    # Check keyword matches
                     matched_keywords = []
                     for keyword in keywords:
                         if keyword.lower() in title.lower():
                             matched_keywords.append(keyword)
                     
                     if matched_keywords:
-                        # Prepare and send notification
-                        message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author or '未知'}\n链接：{link}"
+                        message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author}\n链接：{link}"
                         
                         if send_telegram_message(message, config):
-                            logger.info(f"[{source_name}] ✅ 检测到关键词 '{', '.join(matched_keywords)}' 并发送通知")
-                            logger.info(f"[{source_name}]    标题: {title}")
-                            if enable_debug:
-                                logger.debug(f"[{source_name}]    Dedup key: {dedup_key}")
-                            
-                            # Mark as seen
-                            dedup_hist.mark_seen(dedup_key, current_time)
-                            sent_in_this_cycle.add(dedup_key)
-                            newly_notified.append(dedup_key)
+                            logger.info(f"[{source_name}] 检测到关键词 '{', '.join(matched_keywords)}' 在帖子 '{title}' 并成功发送通知")
+                            notified_posts.add(unique_key)
+                            newly_notified.append(unique_key)
                             config_changed = True
                         else:
-                            logger.error(f"[{source_name}] ❌ 发送通知失败，帖子标题: {title}")
+                            logger.error(f"[{source_name}] 发送通知失败，帖子标题: {title}")
                 
                 except Exception as e:
                     logger.error(f"[{source_name}] 处理RSS条目时出错: {str(e)}")
-                    if enable_debug:
-                        import traceback
-                        logger.debug(traceback.format_exc())
                     continue
             
-            # Save updated history
             if config_changed and newly_notified:
-                save_dedup_history(source, dedup_hist)
+                max_history = config.get('monitor_settings', {}).get('max_history', 100)
+                source['notified_posts'] = list(notified_posts)[-max_history:]
                 save_config(config)
                 logger.info(f"[{source_name}] 已保存 {len(newly_notified)} 个新通知记录")
-                logger.info(f"[{source_name}] 去重历史大小: {dedup_hist.size()} 条")
             
             return True
             
@@ -427,9 +359,6 @@ def check_rss_feed(source, config):
             logger.error(f"[{source_name}] 连接RSS服务器失败 (尝试 {attempt+1}/{max_retries})")
         except Exception as e:
             logger.error(f"[{source_name}] 检查RSS时出错: {str(e)} (尝试 {attempt+1}/{max_retries})")
-            if enable_debug:
-                import traceback
-                logger.debug(traceback.format_exc())
         
         if attempt < max_retries - 1:
             current_retry_delay = retry_delay * (attempt + 1)
