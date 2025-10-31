@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     && rm -rf /root/.cache/pip
 
-COPY rss_main.py start.py README.md ./
+COPY rss_main.py start.py dedup.py README.md ./
 
 RUN mkdir -p /data
 
