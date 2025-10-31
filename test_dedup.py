@@ -249,7 +249,7 @@ class TestDedupHistory(unittest.TestCase):
         self.assertIn("debounced", reason)
     
     def test_old_entry_outside_debounce(self):
-        """Entries older than debounce window should still be in history"""
+        """Entries older than debounce window should allow re-sending"""
         hist = DedupHistory(max_size=100, debounce_hours=24)
         current_time = time.time()
         
@@ -259,9 +259,10 @@ class TestDedupHistory(unittest.TestCase):
         future_time = current_time + (25 * 3600)
         is_dup, reason = hist.is_duplicate("key1", future_time)
         
-        # Should still be marked as duplicate but with different reason
-        self.assertTrue(is_dup)
-        self.assertIn("outside debounce window", reason)
+        # Should NOT be marked as duplicate, allowing re-send
+        self.assertFalse(is_dup)
+        self.assertIn("expired", reason)
+        self.assertIn("outside", reason)
     
     def test_history_trimming(self):
         """History should be trimmed to max_size"""
