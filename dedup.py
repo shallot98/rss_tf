@@ -228,6 +228,9 @@ class DedupHistory:
             
         Returns:
             Tuple of (is_duplicate, reason)
+            - Returns (True, reason) if within debounce window (suppress re-send)
+            - Returns (False, reason) if outside debounce window (allow re-send)
+            - Returns (False, 'new') if not in history (allow send)
         """
         if current_time is None:
             current_time = time.time()
@@ -241,7 +244,8 @@ class DedupHistory:
         if time_elapsed < self.debounce_seconds:
             return True, f'debounced ({time_elapsed/3600:.1f}h ago)'
         else:
-            return True, f'old ({time_elapsed/3600:.1f}h ago, outside debounce window)'
+            # Outside debounce window - allow re-sending
+            return False, f'expired ({time_elapsed/3600:.1f}h ago, outside {self.debounce_seconds/3600:.0f}h window)'
     
     def mark_seen(self, key: str, current_time: Optional[float] = None):
         """

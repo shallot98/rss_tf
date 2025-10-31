@@ -326,7 +326,8 @@ def test_scenario_6_debounce_window():
     is_dup, reason = hist.is_duplicate(key, time_25h)
     print(f"\n25 hours later:")
     print(f"  Is duplicate? {is_dup} ({reason})")
-    assert is_dup, "Should still be in history but outside debounce"
+    assert not is_dup, "Should NOT be duplicate outside debounce window (allow re-send)"
+    print(f"  ✅ Can be re-sent after debounce expires")
     
     print("✅ PASS: Debounce window works correctly")
 

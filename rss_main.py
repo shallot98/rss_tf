@@ -376,6 +376,10 @@ def check_rss_feed(source, config):
                             logger.debug(f"  Title was: {title}")
                         continue
                     
+                    # Log if this is a re-send after debounce expiry
+                    if dup_reason != 'new' and enable_debug:
+                        logger.debug(f"[{source_name}] 🔄 去重窗口已过期，允许重新发送: {dup_reason}")
+                    
                     # Check if already sent in this cycle (multi-keyword protection)
                     if dedup_key in sent_in_this_cycle:
                         logger.info(f"[{source_name}] ⏭️ 本轮已发送，跳过: {dedup_key}")
