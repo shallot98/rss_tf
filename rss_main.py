@@ -89,7 +89,8 @@ DEFAULT_CONFIG = {
         'dedup_history_size': 1000,
         'dedup_debounce_hours': 24,
         'enable_debug_logging': False
-    }
+    },
+    'user_states': {}
 }
 
 def load_config():
@@ -132,6 +133,8 @@ def load_config():
                 config['rss_sources'] = []
             if 'monitor_settings' not in config:
                 config['monitor_settings'] = DEFAULT_CONFIG['monitor_settings'].copy()
+            if 'user_states' not in config:
+                config['user_states'] = {}
         
         return config
 
@@ -560,6 +563,31 @@ def get_source_by_id_or_name(config, identifier):
             return source
     return None
 
+def set_user_state(config, user_id, state, data=None):
+    """设置用户状态"""
+    if 'user_states' not in config:
+        config['user_states'] = {}
+    config['user_states'][str(user_id)] = {
+        'state': state,
+        'data': data or {},
+        'timestamp': time.time()
+    }
+    save_config(config)
+
+def get_user_state(config, user_id):
+    """获取用户状态"""
+    if 'user_states' not in config:
+        return None
+    return config['user_states'].get(str(user_id))
+
+def clear_user_state(config, user_id):
+    """清除用户状态"""
+    if 'user_states' not in config:
+        return
+    if str(user_id) in config['user_states']:
+        del config['user_states'][str(user_id)]
+        save_config(config)
+
 def handle_callback_query(callback_query, config):
     """处理内联键盘回调"""
     try:
@@ -568,6 +596,8 @@ def handle_callback_query(callback_query, config):
         message = callback_query.get("message", {})
         chat_id = message.get("chat", {}).get("id")
         message_id = message.get("message_id")
+        from_user = callback_query.get("from", {})
+        user_id = from_user.get("id")
         
         if data.startswith("source:"):
             source_id = data[7:]
@@ -595,22 +625,20 @@ def handle_callback_query(callback_query, config):
             else:
                 lines.append("(暂无关键词)")
             
-            lines.append("\n💡 <b>管理提示：</b>")
-            lines.append(f"• 添加关键词: /add {source['id']} &lt;关键词&gt;")
-            lines.append(f"• 删除关键词: /del {source['id']} &lt;序号或关键词&gt;")
-            
-            keyboard = [
-                [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
-            ]
+            keyboard = []
             
             if keywords:
-                keyword_buttons = []
                 for i, kw in enumerate(keywords, 1):
-                    keyword_buttons.append([{
+                    keyboard.append([{
                         "text": f"❌ 删除: {kw}",
                         "callback_data": f"delkw:{source['id']}:{i-1}"
                     }])
-                keyboard = keyword_buttons + keyboard
+            
+            keyboard.extend([
+                [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
+                [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
+                [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
+            ])
             
             edit_telegram_message(chat_id, message_id, '\n'.join(lines), config, inline_keyboard=keyboard)
         
@@ -618,19 +646,23 @@ def handle_callback_query(callback_query, config):
             answer_callback_query(query_id, config)
             
             sources = config.get('rss_sources', [])
+            keyboard = []
+            
+            for source in sources:
+                kw_count = len(source.get('keywords', []))
+                button_text = f"📡 {source['name']} ({kw_count}个关键词)"
+                keyboard.append([{
+                    "text": button_text,
+                    "callback_data": f"source:{source['id']}"
+                }])
+            
+            keyboard.append([{"text": "➕ 添加新RSS源", "callback_data": "addsource_start"}])
+            
+            message_text = "<b>📡 RSS源管理</b>\n\n点击下方按钮管理对应的RSS源："
             if not sources:
-                edit_telegram_message(chat_id, message_id, "当前没有配置任何RSS源", config)
-            else:
-                keyboard = []
-                for source in sources:
-                    kw_count = len(source.get('keywords', []))
-                    button_text = f"📡 {source['name']} ({kw_count}个关键词)"
-                    keyboard.append([{
-                        "text": button_text,
-                        "callback_data": f"source:{source['id']}"
-                    }])
-                message_text = "<b>📡 RSS源列表</b>\n\n点击下方按钮管理对应RSS源的关键词："
-                edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
+                message_text = "<b>📡 RSS源管理</b>\n\n当前没有RSS源，点击下方按钮添加："
+            
+            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
         
         elif data.startswith("delkw:"):
             parts = data.split(":", 2)
@@ -661,27 +693,163 @@ def handle_callback_query(callback_query, config):
                         else:
                             lines.append("(暂无关键词)")
                         
-                        lines.append("\n💡 <b>管理提示：</b>")
-                        lines.append(f"• 添加关键词: /add {source['id']} &lt;关键词&gt;")
-                        lines.append(f"• 删除关键词: /del {source['id']} &lt;序号或关键词&gt;")
-                        
-                        keyboard = [
-                            [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
-                        ]
+                        keyboard = []
                         
                         if keywords:
-                            keyword_buttons = []
                             for i, kw in enumerate(keywords, 1):
-                                keyword_buttons.append([{
+                                keyboard.append([{
                                     "text": f"❌ 删除: {kw}",
                                     "callback_data": f"delkw:{source['id']}:{i-1}"
                                 }])
-                            keyboard = keyword_buttons + keyboard
+                        
+                        keyboard.extend([
+                            [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
+                            [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
+                            [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
+                        ])
                         
                         edit_telegram_message(chat_id, message_id, '\n'.join(lines), config, inline_keyboard=keyboard)
+        
+        elif data.startswith("addkw:"):
+            source_id = data[6:]
+            source = get_source_by_id_or_name(config, source_id)
+            
+            if not source:
+                answer_callback_query(query_id, config, "❌ 源不存在")
+                return
+            
+            set_user_state(config, user_id, 'waiting_for_keyword', {'source_id': source_id, 'message_id': message_id})
+            answer_callback_query(query_id, config, "✏️ 请发送要添加的关键词")
+            
+            msg_text = f"<b>➕ 添加关键词到 {source['name']}</b>\n\n请直接发送要添加的关键词："
+            edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=[
+                [{"text": "❌ 取消", "callback_data": f"cancel_add:{source_id}"}]
+            ])
+        
+        elif data.startswith("cancel_add:"):
+            source_id = data[11:]
+            clear_user_state(config, user_id)
+            answer_callback_query(query_id, config, "已取消")
+            
+            source = get_source_by_id_or_name(config, source_id)
+            if source:
+                keywords = source.get('keywords', [])
+                lines = [
+                    f"<b>📡 {source['name']}</b>",
+                    f"ID: <code>{source['id']}</code>",
+                    f"URL: {source['url']}",
+                    f"\n<b>关键词列表：</b>"
+                ]
+                
+                if keywords:
+                    for i, kw in enumerate(keywords, 1):
+                        lines.append(f"{i}. {kw}")
+                else:
+                    lines.append("(暂无关键词)")
+                
+                keyboard = []
+                
+                if keywords:
+                    for i, kw in enumerate(keywords, 1):
+                        keyboard.append([{
+                            "text": f"❌ 删除: {kw}",
+                            "callback_data": f"delkw:{source['id']}:{i-1}"
+                        }])
+                
+                keyboard.extend([
+                    [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
+                    [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
+                    [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
+                ])
+                
+                edit_telegram_message(chat_id, message_id, '\n'.join(lines), config, inline_keyboard=keyboard)
+        
+        elif data.startswith("delsource_confirm:"):
+            source_id = data[18:]
+            source = get_source_by_id_or_name(config, source_id)
+            
+            if not source:
+                answer_callback_query(query_id, config, "❌ 源不存在")
+                return
+            
+            answer_callback_query(query_id, config)
+            
+            msg_text = f"<b>⚠️ 确认删除源</b>\n\n确定要删除 <b>{source['name']}</b> 吗？\n\n此操作将删除该源及其所有关键词，不可恢复！"
+            keyboard = [
+                [{"text": "✅ 确认删除", "callback_data": f"delsource:{source_id}"}],
+                [{"text": "❌ 取消", "callback_data": f"source:{source_id}"}]
+            ]
+            edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=keyboard)
+        
+        elif data.startswith("delsource:"):
+            source_id = data[10:]
+            source = get_source_by_id_or_name(config, source_id)
+            
+            if not source:
+                answer_callback_query(query_id, config, "❌ 源不存在")
+                return
+            
+            source_name = source['name']
+            config['rss_sources'].remove(source)
+            save_config(config)
+            
+            answer_callback_query(query_id, config, f"✓ 已删除源: {source_name}")
+            
+            sources = config.get('rss_sources', [])
+            keyboard = []
+            
+            for source in sources:
+                kw_count = len(source.get('keywords', []))
+                button_text = f"📡 {source['name']} ({kw_count}个关键词)"
+                keyboard.append([{
+                    "text": button_text,
+                    "callback_data": f"source:{source['id']}"
+                }])
+            
+            keyboard.append([{"text": "➕ 添加新RSS源", "callback_data": "addsource_start"}])
+            
+            message_text = f"<b>✓ 已删除源: {source_name}</b>\n\n<b>📡 RSS源管理</b>\n\n点击下方按钮管理对应的RSS源："
+            if not sources:
+                message_text = f"<b>✓ 已删除源: {source_name}</b>\n\n<b>📡 RSS源管理</b>\n\n当前没有RSS源，点击下方按钮添加："
+            
+            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
+        
+        elif data == "addsource_start":
+            set_user_state(config, user_id, 'waiting_for_source_url', {'message_id': message_id})
+            answer_callback_query(query_id, config, "✏️ 请发送RSS源的URL")
+            
+            msg_text = "<b>➕ 添加新RSS源</b>\n\n步骤 1/2：请发送RSS源的URL\n例如：https://rss.example.com/"
+            edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=[
+                [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+            ])
+        
+        elif data == "cancel_addsource":
+            clear_user_state(config, user_id)
+            answer_callback_query(query_id, config, "已取消")
+            
+            sources = config.get('rss_sources', [])
+            keyboard = []
+            
+            for source in sources:
+                kw_count = len(source.get('keywords', []))
+                button_text = f"📡 {source['name']} ({kw_count}个关键词)"
+                keyboard.append([{
+                    "text": button_text,
+                    "callback_data": f"source:{source['id']}"
+                }])
+            
+            keyboard.append([{"text": "➕ 添加新RSS源", "callback_data": "addsource_start"}])
+            
+            message_text = "<b>📡 RSS源管理</b>\n\n点击下方按钮管理对应的RSS源："
+            if not sources:
+                message_text = "<b>📡 RSS源管理</b>\n\n当前没有RSS源，点击下方按钮添加："
+            
+            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
     
     except Exception as e:
         logger.error(f"处理callback query时出错: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 def telegram_command_listener():
     """监听Telegram消息，支持源和关键词管理指令"""
@@ -724,6 +892,146 @@ def telegram_command_listener():
                         
                         text = message.get("text", "").strip()
                         msg_id = message.get("message_id")
+                        from_user = message.get("from", {})
+                        user_id = from_user.get("id")
+                        
+                        user_state = get_user_state(config, user_id)
+                        
+                        if user_state:
+                            state = user_state.get('state')
+                            state_data = user_state.get('data', {})
+                            original_msg_id = state_data.get('message_id')
+                            
+                            if state == 'waiting_for_keyword':
+                                source_id = state_data.get('source_id')
+                                source = get_source_by_id_or_name(config, source_id)
+                                
+                                if source:
+                                    keyword = text.strip()
+                                    if keyword:
+                                        if any(keyword.lower() == k.lower() for k in source.get('keywords', [])):
+                                            send_telegram_message(f"❌ 关键词 '{keyword}' 已存在\n\n请发送其他关键词，或点击下方按钮取消：", config, msg_id, inline_keyboard=[
+                                                [{"text": "❌ 取消", "callback_data": f"cancel_add:{source_id}"}]
+                                            ])
+                                        else:
+                                            if 'keywords' not in source:
+                                                source['keywords'] = []
+                                            source['keywords'].append(keyword)
+                                            save_config(config)
+                                            clear_user_state(config, user_id)
+                                            
+                                            keywords = source.get('keywords', [])
+                                            lines = [
+                                                f"<b>✓ 已添加关键词: {keyword}</b>\n",
+                                                f"<b>📡 {source['name']}</b>",
+                                                f"ID: <code>{source['id']}</code>",
+                                                f"URL: {source['url']}",
+                                                f"\n<b>关键词列表：</b>"
+                                            ]
+                                            
+                                            for i, kw in enumerate(keywords, 1):
+                                                lines.append(f"{i}. {kw}")
+                                            
+                                            keyboard = []
+                                            
+                                            for i, kw in enumerate(keywords, 1):
+                                                keyboard.append([{
+                                                    "text": f"❌ 删除: {kw}",
+                                                    "callback_data": f"delkw:{source['id']}:{i-1}"
+                                                }])
+                                            
+                                            keyboard.extend([
+                                                [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
+                                                [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
+                                                [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
+                                            ])
+                                            
+                                            if original_msg_id:
+                                                edit_telegram_message(chat_id, original_msg_id, '\n'.join(lines), config, inline_keyboard=keyboard)
+                                            else:
+                                                send_telegram_message('\n'.join(lines), config, msg_id, inline_keyboard=keyboard)
+                                    else:
+                                        send_telegram_message("❌ 关键词不能为空\n\n请发送要添加的关键词：", config, msg_id, inline_keyboard=[
+                                            [{"text": "❌ 取消", "callback_data": f"cancel_add:{source_id}"}]
+                                        ])
+                                else:
+                                    clear_user_state(config, user_id)
+                                    send_telegram_message("❌ 源不存在", config, msg_id)
+                                continue
+                            
+                            elif state == 'waiting_for_source_url':
+                                url = text.strip()
+                                if url:
+                                    if not url.startswith('http://') and not url.startswith('https://'):
+                                        send_telegram_message("❌ URL格式不正确，必须以 http:// 或 https:// 开头\n\n请重新发送RSS源的URL：", config, msg_id, inline_keyboard=[
+                                            [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                        ])
+                                    else:
+                                        state_data['url'] = url
+                                        set_user_state(config, user_id, 'waiting_for_source_name', state_data)
+                                        
+                                        msg_text = f"<b>➕ 添加新RSS源</b>\n\nURL: {url}\n\n步骤 2/2：请发送RSS源的名称\n例如：NodeSeek"
+                                        if original_msg_id:
+                                            edit_telegram_message(chat_id, original_msg_id, msg_text, config, inline_keyboard=[
+                                                [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                            ])
+                                        else:
+                                            send_telegram_message(msg_text, config, msg_id, inline_keyboard=[
+                                                [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                            ])
+                                else:
+                                    send_telegram_message("❌ URL不能为空\n\n请发送RSS源的URL：", config, msg_id, inline_keyboard=[
+                                        [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                    ])
+                                continue
+                            
+                            elif state == 'waiting_for_source_name':
+                                name = text.strip()
+                                if name:
+                                    source_id = name.lower().replace(' ', '_').replace('-', '_')
+                                    source_id = re.sub(r'[^a-z0-9_]', '', source_id)
+                                    
+                                    if get_source_by_id_or_name(config, source_id) or get_source_by_id_or_name(config, name):
+                                        send_telegram_message(f"❌ 源名称 '{name}' 已存在\n\n请发送其他名称：", config, msg_id, inline_keyboard=[
+                                            [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                        ])
+                                    else:
+                                        url = state_data.get('url')
+                                        new_source = {
+                                            'id': source_id,
+                                            'name': name,
+                                            'url': url,
+                                            'keywords': [],
+                                            'notified_posts': []
+                                        }
+                                        config['rss_sources'].append(new_source)
+                                        save_config(config)
+                                        clear_user_state(config, user_id)
+                                        
+                                        lines = [
+                                            f"<b>✓ 已添加RSS源</b>\n",
+                                            f"<b>📡 {name}</b>",
+                                            f"ID: <code>{source_id}</code>",
+                                            f"URL: {url}",
+                                            f"\n<b>关键词列表：</b>",
+                                            "(暂无关键词)"
+                                        ]
+                                        
+                                        keyboard = [
+                                            [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source_id}"}],
+                                            [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source_id}"}],
+                                            [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
+                                        ]
+                                        
+                                        if original_msg_id:
+                                            edit_telegram_message(chat_id, original_msg_id, '\n'.join(lines), config, inline_keyboard=keyboard)
+                                        else:
+                                            send_telegram_message('\n'.join(lines), config, msg_id, inline_keyboard=keyboard)
+                                else:
+                                    send_telegram_message("❌ 名称不能为空\n\n请发送RSS源的名称：", config, msg_id, inline_keyboard=[
+                                        [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
+                                    ])
+                                continue
                         
                         if text.startswith("/addsource "):
                             parts = text[11:].strip().split(None, 1)
@@ -776,21 +1084,25 @@ def telegram_command_listener():
                             save_config(config)
                             send_telegram_message(f"✓ 已删除源: {source_to_delete['name']}", config, msg_id)
                         
-                        elif text.startswith("/listsources"):
+                        elif text.startswith("/listsources") or text.startswith("/manage"):
                             sources = config.get('rss_sources', [])
+                            keyboard = []
+                            
+                            for source in sources:
+                                kw_count = len(source.get('keywords', []))
+                                button_text = f"📡 {source['name']} ({kw_count}个关键词)"
+                                keyboard.append([{
+                                    "text": button_text,
+                                    "callback_data": f"source:{source['id']}"
+                                }])
+                            
+                            keyboard.append([{"text": "➕ 添加新RSS源", "callback_data": "addsource_start"}])
+                            
+                            message = "<b>📡 RSS源管理</b>\n\n点击下方按钮管理对应的RSS源："
                             if not sources:
-                                send_telegram_message("当前没有配置任何RSS源", config, msg_id)
-                            else:
-                                keyboard = []
-                                for source in sources:
-                                    kw_count = len(source.get('keywords', []))
-                                    button_text = f"📡 {source['name']} ({kw_count}个关键词)"
-                                    keyboard.append([{
-                                        "text": button_text,
-                                        "callback_data": f"source:{source['id']}"
-                                    }])
-                                message = "<b>📡 RSS源列表</b>\n\n点击下方按钮管理对应RSS源的关键词："
-                                send_telegram_message(message, config, msg_id, inline_keyboard=keyboard)
+                                message = "<b>📡 RSS源管理</b>\n\n当前没有RSS源，点击下方按钮添加："
+                            
+                            send_telegram_message(message, config, msg_id, inline_keyboard=keyboard)
                         
                         elif text.startswith("/add "):
                             parts = text[5:].strip().split(None, 1)
@@ -884,26 +1196,27 @@ def telegram_command_listener():
                                         lines.append("  (无关键词)")
                                 send_telegram_message('\n'.join(lines), config, msg_id)
                         
-                        elif text.startswith("/help"):
+                        elif text.startswith("/help") or text.startswith("/start"):
                             help_msg = (
-                                "<b>RSS 监控机器人指令:</b>\n\n"
+                                "<b>🤖 RSS 监控机器人</b>\n\n"
+                                "<b>📱 按钮式管理（推荐）：</b>\n"
+                                "/manage 或 /listsources - 打开管理面板\n"
+                                "• 使用按钮添加/删除RSS源\n"
+                                "• 使用按钮添加/删除关键词\n"
+                                "• 所有操作都可以通过按钮完成\n\n"
+                                "<b>⌨️ 命令行管理（备用）：</b>\n\n"
                                 "<b>源管理:</b>\n"
                                 "/addsource &lt;url&gt; &lt;name&gt; - 添加RSS源\n"
-                                "/delsource &lt;序号或名称&gt; - 删除RSS源\n"
-                                "/listsources - 列出所有RSS源（内联键盘）\n\n"
+                                "/delsource &lt;序号或名称&gt; - 删除RSS源\n\n"
                                 "<b>关键词管理:</b>\n"
                                 "/add &lt;source_name&gt; &lt;keyword&gt; - 添加关键词\n"
                                 "/del &lt;source_name&gt; &lt;序号或关键词&gt; - 删除关键词\n"
                                 "/list &lt;source_name&gt; - 列出指定源的关键词\n"
                                 "/list - 列出所有源的关键词\n\n"
-                                "<b>内联键盘操作:</b>\n"
-                                "• 使用 /listsources 显示所有RSS源按钮\n"
-                                "• 点击源按钮查看和管理该源的关键词\n"
-                                "• 直接点击按钮删除关键词\n\n"
-                                "<b>提示:</b>\n"
-                                "• 删除时可使用序号或名称/关键词\n"
-                                "• 使用 /listsources 或 /list 查看序号\n\n"
-                                "/help - 查看帮助"
+                                "<b>💡 使用建议：</b>\n"
+                                "推荐使用 /manage 进入按钮管理界面，\n"
+                                "所有添加和删除操作都更加直观方便！\n\n"
+                                "/help - 查看此帮助"
                             )
                             send_telegram_message(help_msg, config, msg_id)
             
