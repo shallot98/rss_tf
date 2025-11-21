@@ -315,133 +315,79 @@ def check_author_match(author, filter_list, match_mode='contains'):
     
     Args:
         author: 作者名称
-        filter_list: 过滤列表（可以是字符串列表或对象列表）
+        filter_list: 过滤列表
         match_mode: 匹配模式 ('exact' 或 'contains')
     
     Returns:
-        tuple: (matched, author_obj) - 是否匹配和匹配的作者对象（如果有）
+        bool: 是否匹配
     """
     if not author or not filter_list:
-        return False, None
+        return False
     
     author_lower = author.lower().strip()
     
-    for filter_item in filter_list:
-        # Support both string and object format for backward compatibility
-        if isinstance(filter_item, dict):
-            filter_author = filter_item.get('name', '')
-            item_match_mode = filter_item.get('match_mode', match_mode)
-        else:
-            filter_author = filter_item
-            item_match_mode = match_mode
-        
+    for filter_author in filter_list:
         filter_lower = filter_author.lower().strip()
         
-        if item_match_mode == 'exact':
+        if match_mode == 'exact':
             if author_lower == filter_lower:
-                return True, filter_item if isinstance(filter_item, dict) else None
+                return True
         else:  # contains mode (default)
             if filter_lower in author_lower or author_lower in filter_lower:
-                return True, filter_item if isinstance(filter_item, dict) else None
+                return True
     
-    return False, None
+    return False
 
-def check_author_keywords(title, author_obj):
+def should_filter_by_author(author, source):
     """
-    检查内容是否匹配作者特定的关键词过滤
-    
-    Args:
-        title: 文章标题
-        author_obj: 作者对象（包含keywords和keywords_mode字段）
-    
-    Returns:
-        tuple: (matches, matched_keywords) - 是否匹配和匹配的关键词列表
-    """
-    if not isinstance(author_obj, dict):
-        # 如果不是字典对象，说明没有配置关键词过滤，默认通过
-        return True, []
-    
-    keywords = author_obj.get('keywords', [])
-    keywords_mode = author_obj.get('keywords_mode', 'none')
-    
-    # 'none' 模式或没有关键词：不进行关键词过滤
-    if keywords_mode == 'none' or not keywords:
-        return True, []
-    
-    # 检查关键词匹配
-    matched_keywords = []
-    title_lower = title.lower()
-    
-    for keyword in keywords:
-        if keyword.lower() in title_lower:
-            matched_keywords.append(keyword)
-    
-    # 根据模式判断是否通过
-    if keywords_mode == 'all':
-        # 全部关键词都必须匹配
-        return len(matched_keywords) == len(keywords), matched_keywords
-    elif keywords_mode == 'any':
-        # 任一关键词匹配即可
-        return len(matched_keywords) > 0, matched_keywords
-    else:  # 'none' - 已在前面处理
-        return True, []
-
-def should_filter_by_author(author, title, source):
-    """
-    判断内容是否通过作者过滤（新版OR逻辑）
+    判断是否应该根据作者过滤掉此条目
     
     Args:
         author: 作者名称
-        title: 文章标题
         source: RSS源配置
     
     Returns:
-        tuple: (passes, reason, matched_keywords) - 是否通过、原因、匹配的关键词
+        tuple: (should_skip, reason) - 是否应该跳过和原因
     """
     whitelist = source.get('author_whitelist', [])
     blacklist = source.get('author_blacklist', [])
     match_mode = source.get('author_match_mode', 'contains')
     
-    # 黑名单检查（最高优先级）
-    if blacklist:
-        is_blacklisted, _ = check_author_match(author, blacklist, match_mode)
-        if is_blacklisted:
-            return False, f"作者 '{author}' 在黑名单中", []
+    # 如果没有配置任何作者过滤，放行
+    if not whitelist and not blacklist:
+        return False, None
     
-    # 白名单检查
+    # 白名单优先：如果配置了白名单，只允许白名单中的作者
     if whitelist:
         if not author:
-            # 如果没有作者信息且配置了白名单，不通过作者过滤
-            return False, "作者为空且配置了白名单", []
+            return True, "作者为空且配置了白名单"
         
-        is_whitelisted, author_obj = check_author_match(author, whitelist, match_mode)
-        if is_whitelisted:
-            # 检查作者特定的关键词过滤
-            matches_keywords, matched_kws = check_author_keywords(title, author_obj)
-            if matches_keywords:
-                return True, f"作者 '{author}' 在白名单中", matched_kws
-            else:
-                return False, f"作者 '{author}' 在白名单但内容不符合该作者的关键词过滤", []
+        if check_author_match(author, whitelist, match_mode):
+            # 在白名单中，但还需要检查是否在黑名单
+            if blacklist and check_author_match(author, blacklist, match_mode):
+                return True, f"作者 '{author}' 在白名单但也在黑名单"
+            return False, None  # 在白名单且不在黑名单，放行
         else:
-            # 不在白名单中，不通过作者过滤
-            return False, f"作者 '{author}' 不在白名单中", []
+            return True, f"作者 '{author}' 不在白名单中"
     
-    # 没有配置白名单，不通过作者过滤（但不阻止，让关键词过滤来决定）
-    return False, "未配置作者白名单", []
+    # 只有黑名单：排除黑名单中的作者
+    if blacklist:
+        if author and check_author_match(author, blacklist, match_mode):
+            return True, f"作者 '{author}' 在黑名单中"
+    
+    return False, None
 
 def check_rss_feed(source, config):
-    """检查单个RSS源并匹配关键词或作者（使用改进的去重逻辑）"""
+    """检查单个RSS源并匹配关键词（使用改进的去重逻辑）"""
     source_name = source.get('name', 'Unknown')
     source_url = source.get('url', '')
     keywords = source.get('keywords', [])
-    author_whitelist = source.get('author_whitelist', [])
     
     monitor_settings = config.get('monitor_settings', {})
     enable_debug = monitor_settings.get('enable_debug_logging', False)
     
-    # 检查是否配置了关键词或作者过滤
-    if not keywords and not author_whitelist:
-        logger.info(f"源 '{source_name}' 没有设置关键词或作者白名单，跳过检查")
+    if not keywords:
+        logger.info(f"源 '{source_name}' 没有设置关键词，跳过检查")
         return False
     
     if not source_url:
@@ -568,54 +514,28 @@ def check_rss_feed(source, config):
                         logger.info(f"[{source_name}] ⏭️ 本轮已发送，跳过: {dedup_key}")
                         continue
                     
-                    # OR逻辑：检查关键词过滤 OR 作者过滤
-                    # 任一条件满足即发送通知
+                    # Check keyword matches
+                    matched_keywords = []
+                    for keyword in keywords:
+                        if keyword.lower() in title.lower():
+                            matched_keywords.append(keyword)
                     
-                    should_notify = False
-                    notification_reason = ""
-                    all_matched_keywords = []
-                    
-                    # 1. 检查全局关键词匹配
-                    keyword_matched = False
-                    keyword_matched_list = []
-                    if keywords:
-                        for keyword in keywords:
-                            if keyword.lower() in title.lower():
-                                keyword_matched_list.append(keyword)
+                    if matched_keywords:
+                        # Check author filter (after keyword match, AND logic)
+                        should_skip, skip_reason = should_filter_by_author(author, source)
                         
-                        if keyword_matched_list:
-                            keyword_matched = True
-                    
-                    # 2. 检查作者过滤
-                    author_passes, author_reason, author_keywords = should_filter_by_author(author, title, source)
-                    
-                    # 3. 应用OR逻辑
-                    if keyword_matched and author_passes:
-                        # 两者都匹配
-                        should_notify = True
-                        notification_reason = "关键词+作者匹配"
-                        all_matched_keywords = list(set(keyword_matched_list + author_keywords))
-                    elif keyword_matched:
-                        # 仅关键词匹配
-                        should_notify = True
-                        notification_reason = "关键词匹配"
-                        all_matched_keywords = keyword_matched_list
-                    elif author_passes:
-                        # 仅作者匹配
-                        should_notify = True
-                        notification_reason = "作者匹配"
-                        all_matched_keywords = author_keywords
-                    
-                    if should_notify:
+                        if should_skip:
+                            logger.info(f"[{source_name}] ⏭️ 作者过滤跳过: {skip_reason}")
+                            if enable_debug:
+                                logger.debug(f"  Title was: {title}")
+                            continue
+                        
                         # Prepare and send notification
-                        keyword_display = ', '.join(all_matched_keywords) if all_matched_keywords else '(无)'
-                        message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{keyword_display}\n作者：{author or '未知'}\n匹配原因：{notification_reason}\n链接：{link}"
+                        message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author or '未知'}\n链接：{link}"
                         
                         if send_telegram_message(message, config):
-                            logger.info(f"[{source_name}] ✅ {notification_reason}，发送通知")
+                            logger.info(f"[{source_name}] ✅ 检测到关键词 '{', '.join(matched_keywords)}' 并发送通知")
                             logger.info(f"[{source_name}]    标题: {title}")
-                            if all_matched_keywords:
-                                logger.info(f"[{source_name}]    关键词: {', '.join(all_matched_keywords)}")
                             if enable_debug:
                                 logger.debug(f"[{source_name}]    Dedup key: {dedup_key}")
                             
@@ -626,14 +546,6 @@ def check_rss_feed(source, config):
                             config_changed = True
                         else:
                             logger.error(f"[{source_name}] ❌ 发送通知失败，帖子标题: {title}")
-                    else:
-                        # 不满足任何条件，跳过
-                        if enable_debug:
-                            logger.debug(f"[{source_name}] ⏭️ 不满足过滤条件，跳过: {title}")
-                            if not keyword_matched and keywords:
-                                logger.debug(f"  关键词不匹配")
-                            if not author_passes:
-                                logger.debug(f"  作者过滤: {author_reason}")
                 
                 except Exception as e:
                     logger.error(f"[{source_name}] 处理RSS条目时出错: {str(e)}")
@@ -738,42 +650,6 @@ def get_source_by_id_or_name(config, identifier):
     for source in config.get('rss_sources', []):
         if source.get('id') == identifier or source.get('name') == identifier:
             return source
-    return None
-
-def get_author_name(author_item):
-    """从作者项获取名称（支持字符串和对象格式）"""
-    if isinstance(author_item, dict):
-        return author_item.get('name', '')
-    return author_item
-
-def normalize_author_list(author_list):
-    """
-    标准化作者列表格式
-    将旧的字符串列表转换为新的对象列表格式
-    """
-    normalized = []
-    for item in author_list:
-        if isinstance(item, dict):
-            # 已经是新格式
-            if 'name' in item:
-                normalized.append(item)
-        else:
-            # 旧格式，转换为新格式
-            normalized.append({
-                'name': item,
-                'match_mode': 'exact',
-                'keywords': [],
-                'keywords_mode': 'none'
-            })
-    return normalized
-
-def find_author_in_list(author_name, author_list):
-    """在作者列表中查找作者（支持新旧格式）"""
-    author_name_lower = author_name.lower().strip()
-    for item in author_list:
-        item_name = get_author_name(item).lower().strip()
-        if item_name == author_name_lower:
-            return item
     return None
 
 def set_user_state(config, user_id, state, data=None):
@@ -1114,23 +990,14 @@ def handle_callback_query(callback_query, config):
                     [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
                 ]
             else:
-                message_text = f"<b>🤍 白名单作者 - {source['name']}</b>\n\n点击作者查看详情：\n\n"
+                message_text = f"<b>🤍 白名单作者 - {source['name']}</b>\n\n"
                 keyboard = []
                 
                 for author in whitelist:
-                    author_name = get_author_name(author)
-                    display_name = author_name if len(author_name) <= 30 else author_name[:27] + "..."
-                    
-                    # 显示作者信息摘要
-                    if isinstance(author, dict):
-                        keywords = author.get('keywords', [])
-                        kw_info = f" ({len(keywords)}个关键词)" if keywords else ""
-                        message_text += f"• {author_name}{kw_info}\n"
-                    else:
-                        message_text += f"• {author_name}\n"
-                    
+                    display_name = author if len(author) <= 30 else author[:27] + "..."
+                    message_text += f"• {author}\n"
                     keyboard.append([
-                        {"text": f"📝 {display_name}", "callback_data": f"author_detail:{source_id}:{author_name}"}
+                        {"text": f"❌ {display_name}", "callback_data": f"del_whitelist:{source_id}:{author}"}
                     ])
                 
                 keyboard.extend([
@@ -1392,289 +1259,6 @@ def handle_callback_query(callback_query, config):
             ]
             
             edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("author_detail:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author_name = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if not source:
-                    answer_callback_query(query_id, config, "❌ 源不存在")
-                    return
-                
-                whitelist = source.get('author_whitelist', [])
-                author_obj = find_author_in_list(author_name, whitelist)
-                
-                if not author_obj:
-                    answer_callback_query(query_id, config, "❌ 作者不存在")
-                    return
-                
-                answer_callback_query(query_id, config)
-                
-                # 显示作者详情
-                if isinstance(author_obj, dict):
-                    match_mode = author_obj.get('match_mode', 'exact')
-                    keywords = author_obj.get('keywords', [])
-                    keywords_mode = author_obj.get('keywords_mode', 'none')
-                    
-                    message_text = (
-                        f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                        f"作者: <b>{author_name}</b>\n"
-                        f"匹配模式: <code>{match_mode}</code>\n"
-                        f"关键词模式: <code>{keywords_mode}</code>\n\n"
-                    )
-                    
-                    if keywords:
-                        message_text += "<b>关键词过滤:</b>\n"
-                        for kw in keywords:
-                            message_text += f"  • {kw}\n"
-                    else:
-                        message_text += "<b>关键词过滤:</b> (无，推送所有内容)\n"
-                else:
-                    # 旧格式作者
-                    message_text = (
-                        f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                        f"作者: <b>{author_name}</b>\n"
-                        f"匹配模式: <code>exact</code> (旧格式)\n"
-                        f"关键词过滤: (无，推送所有内容)\n"
-                    )
-                
-                keyboard = [
-                    [{"text": "📋 设置关键词", "callback_data": f"set_author_keywords:{source_id}:{author_name}"}],
-                    [{"text": "🔄 切换关键词模式", "callback_data": f"toggle_keywords_mode:{source_id}:{author_name}"}],
-                    [{"text": "🔄 切换匹配模式", "callback_data": f"toggle_author_match:{source_id}:{author_name}"}],
-                    [{"text": "❌ 删除作者", "callback_data": f"del_whitelist:{source_id}:{author_name}"}],
-                    [{"text": "🔙 返回白名单", "callback_data": f"view_whitelist:{source_id}"}]
-                ]
-                
-                edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("set_author_keywords:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author_name = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if not source:
-                    answer_callback_query(query_id, config, "❌ 源不存在")
-                    return
-                
-                set_user_state(config, user_id, 'waiting_for_author_keywords', {
-                    'source_id': source_id,
-                    'author_name': author_name,
-                    'message_id': message_id
-                })
-                answer_callback_query(query_id, config, "✏️ 请发送关键词")
-                
-                msg_text = (
-                    f"<b>📋 设置作者关键词过滤</b>\n\n"
-                    f"作者: <b>{author_name}</b>\n\n"
-                    f"请发送要为该作者设置的关键词，多个关键词用逗号分隔。\n"
-                    f"例如: Python,JavaScript,Docker\n\n"
-                    f"💡 留空表示不过滤关键词，推送该作者的所有内容"
-                )
-                edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=[
-                    [{"text": "🗑️ 清空关键词", "callback_data": f"clear_author_keywords:{source_id}:{author_name}"}],
-                    [{"text": "❌ 取消", "callback_data": f"author_detail:{source_id}:{author_name}"}]
-                ])
-        
-        elif data.startswith("clear_author_keywords:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author_name = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if not source:
-                    answer_callback_query(query_id, config, "❌ 源不存在")
-                    return
-                
-                whitelist = source.get('author_whitelist', [])
-                author_obj = find_author_in_list(author_name, whitelist)
-                
-                if author_obj:
-                    if isinstance(author_obj, dict):
-                        author_obj['keywords'] = []
-                        author_obj['keywords_mode'] = 'none'
-                        save_config(config)
-                        answer_callback_query(query_id, config, "✓ 已清空关键词")
-                    
-                    # 返回作者详情页
-                    if isinstance(author_obj, dict):
-                        match_mode = author_obj.get('match_mode', 'exact')
-                        keywords = author_obj.get('keywords', [])
-                        keywords_mode = author_obj.get('keywords_mode', 'none')
-                        
-                        message_text = (
-                            f"<b>✓ 已清空关键词</b>\n\n"
-                            f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                            f"作者: <b>{author_name}</b>\n"
-                            f"匹配模式: <code>{match_mode}</code>\n"
-                            f"关键词模式: <code>{keywords_mode}</code>\n\n"
-                            f"<b>关键词过滤:</b> (无，推送所有内容)\n"
-                        )
-                    else:
-                        message_text = (
-                            f"<b>✓ 已清空关键词</b>\n\n"
-                            f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                            f"作者: <b>{author_name}</b>\n"
-                            f"匹配模式: <code>exact</code> (旧格式)\n"
-                            f"关键词过滤: (无，推送所有内容)\n"
-                        )
-                    
-                    keyboard = [
-                        [{"text": "📋 设置关键词", "callback_data": f"set_author_keywords:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换关键词模式", "callback_data": f"toggle_keywords_mode:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换匹配模式", "callback_data": f"toggle_author_match:{source_id}:{author_name}"}],
-                        [{"text": "❌ 删除作者", "callback_data": f"del_whitelist:{source_id}:{author_name}"}],
-                        [{"text": "🔙 返回白名单", "callback_data": f"view_whitelist:{source_id}"}]
-                    ]
-                    
-                    edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-                else:
-                    answer_callback_query(query_id, config, "❌ 作者不存在")
-        
-        elif data.startswith("toggle_keywords_mode:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author_name = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if not source:
-                    answer_callback_query(query_id, config, "❌ 源不存在")
-                    return
-                
-                whitelist = source.get('author_whitelist', [])
-                author_obj = find_author_in_list(author_name, whitelist)
-                
-                if author_obj:
-                    # 确保是新格式
-                    if not isinstance(author_obj, dict):
-                        # 转换为新格式
-                        idx = whitelist.index(author_obj)
-                        author_obj = {
-                            'name': author_name,
-                            'match_mode': 'exact',
-                            'keywords': [],
-                            'keywords_mode': 'none'
-                        }
-                        whitelist[idx] = author_obj
-                    
-                    # 切换模式: none -> any -> all -> none
-                    current_mode = author_obj.get('keywords_mode', 'none')
-                    if current_mode == 'none':
-                        new_mode = 'any'
-                    elif current_mode == 'any':
-                        new_mode = 'all'
-                    else:  # 'all'
-                        new_mode = 'none'
-                    
-                    author_obj['keywords_mode'] = new_mode
-                    save_config(config)
-                    answer_callback_query(query_id, config, f"✓ 已切换到 {new_mode} 模式")
-                    
-                    # 返回作者详情页
-                    match_mode = author_obj.get('match_mode', 'exact')
-                    keywords = author_obj.get('keywords', [])
-                    
-                    message_text = (
-                        f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                        f"作者: <b>{author_name}</b>\n"
-                        f"匹配模式: <code>{match_mode}</code>\n"
-                        f"关键词模式: <code>{new_mode}</code>\n\n"
-                    )
-                    
-                    if keywords:
-                        message_text += "<b>关键词过滤:</b>\n"
-                        for kw in keywords:
-                            message_text += f"  • {kw}\n"
-                        
-                        if new_mode == 'all':
-                            message_text += "\n💡 当前模式：必须匹配所有关键词\n"
-                        elif new_mode == 'any':
-                            message_text += "\n💡 当前模式：匹配任一关键词即可\n"
-                    else:
-                        message_text += "<b>关键词过滤:</b> (无，推送所有内容)\n"
-                    
-                    keyboard = [
-                        [{"text": "📋 设置关键词", "callback_data": f"set_author_keywords:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换关键词模式", "callback_data": f"toggle_keywords_mode:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换匹配模式", "callback_data": f"toggle_author_match:{source_id}:{author_name}"}],
-                        [{"text": "❌ 删除作者", "callback_data": f"del_whitelist:{source_id}:{author_name}"}],
-                        [{"text": "🔙 返回白名单", "callback_data": f"view_whitelist:{source_id}"}]
-                    ]
-                    
-                    edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-                else:
-                    answer_callback_query(query_id, config, "❌ 作者不存在")
-        
-        elif data.startswith("toggle_author_match:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author_name = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if not source:
-                    answer_callback_query(query_id, config, "❌ 源不存在")
-                    return
-                
-                whitelist = source.get('author_whitelist', [])
-                author_obj = find_author_in_list(author_name, whitelist)
-                
-                if author_obj:
-                    # 确保是新格式
-                    if not isinstance(author_obj, dict):
-                        # 转换为新格式
-                        idx = whitelist.index(author_obj)
-                        author_obj = {
-                            'name': author_name,
-                            'match_mode': 'exact',
-                            'keywords': [],
-                            'keywords_mode': 'none'
-                        }
-                        whitelist[idx] = author_obj
-                    
-                    # 切换匹配模式
-                    current_mode = author_obj.get('match_mode', 'exact')
-                    new_mode = 'contains' if current_mode == 'exact' else 'exact'
-                    author_obj['match_mode'] = new_mode
-                    save_config(config)
-                    answer_callback_query(query_id, config, f"✓ 已切换到 {new_mode} 模式")
-                    
-                    # 返回作者详情页
-                    keywords = author_obj.get('keywords', [])
-                    keywords_mode = author_obj.get('keywords_mode', 'none')
-                    
-                    message_text = (
-                        f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                        f"作者: <b>{author_name}</b>\n"
-                        f"匹配模式: <code>{new_mode}</code>\n"
-                        f"关键词模式: <code>{keywords_mode}</code>\n\n"
-                    )
-                    
-                    if keywords:
-                        message_text += "<b>关键词过滤:</b>\n"
-                        for kw in keywords:
-                            message_text += f"  • {kw}\n"
-                    else:
-                        message_text += "<b>关键词过滤:</b> (无，推送所有内容)\n"
-                    
-                    keyboard = [
-                        [{"text": "📋 设置关键词", "callback_data": f"set_author_keywords:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换关键词模式", "callback_data": f"toggle_keywords_mode:{source_id}:{author_name}"}],
-                        [{"text": "🔄 切换匹配模式", "callback_data": f"toggle_author_match:{source_id}:{author_name}"}],
-                        [{"text": "❌ 删除作者", "callback_data": f"del_whitelist:{source_id}:{author_name}"}],
-                        [{"text": "🔙 返回白名单", "callback_data": f"view_whitelist:{source_id}"}]
-                    ]
-                    
-                    edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-                else:
-                    answer_callback_query(query_id, config, "❌ 作者不存在")
     
     except Exception as e:
         logger.error(f"处理callback query时出错: {e}")
@@ -1878,44 +1462,25 @@ def telegram_command_listener():
                                         if 'author_whitelist' not in source:
                                             source['author_whitelist'] = []
                                         
-                                        whitelist = source.get('author_whitelist', [])
-                                        
-                                        # 检查是否已存在（使用新的辅助函数）
-                                        if find_author_in_list(author, whitelist):
+                                        if any(author.lower() == a.lower() for a in source.get('author_whitelist', [])):
                                             send_telegram_message(f"❌ 作者 '{author}' 已在白名单中\n\n请发送其他作者名称，或点击下方按钮取消：", config, msg_id, inline_keyboard=[
                                                 [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
                                             ])
                                         else:
-                                            # 添加新格式的作者对象
-                                            new_author = {
-                                                'name': author,
-                                                'match_mode': 'exact',
-                                                'keywords': [],
-                                                'keywords_mode': 'none'
-                                            }
-                                            source['author_whitelist'].append(new_author)
+                                            source['author_whitelist'].append(author)
                                             save_config(config)
                                             clear_user_state(config, user_id)
                                             
                                             whitelist = source.get('author_whitelist', [])
                                             
-                                            message_text = f"<b>✓ 已添加白名单作者: {author}</b>\n\n<b>🤍 白名单作者 - {source['name']}</b>\n\n点击作者查看详情：\n\n"
+                                            message_text = f"<b>✓ 已添加白名单作者: {author}</b>\n\n<b>🤍 白名单作者 - {source['name']}</b>\n\n"
                                             keyboard = []
                                             
                                             for a in whitelist:
-                                                author_name = get_author_name(a)
-                                                display_name = author_name if len(author_name) <= 30 else author_name[:27] + "..."
-                                                
-                                                # 显示作者信息摘要
-                                                if isinstance(a, dict):
-                                                    keywords = a.get('keywords', [])
-                                                    kw_info = f" ({len(keywords)}个关键词)" if keywords else ""
-                                                    message_text += f"• {author_name}{kw_info}\n"
-                                                else:
-                                                    message_text += f"• {author_name}\n"
-                                                
+                                                display_name = a if len(a) <= 30 else a[:27] + "..."
+                                                message_text += f"• {a}\n"
                                                 keyboard.append([
-                                                    {"text": f"📝 {display_name}", "callback_data": f"author_detail:{source_id}:{author_name}"}
+                                                    {"text": f"❌ {display_name}", "callback_data": f"del_whitelist:{source_id}:{a}"}
                                                 ])
                                             
                                             keyboard.extend([
@@ -1980,88 +1545,6 @@ def telegram_command_listener():
                                         send_telegram_message("❌ 作者名称不能为空\n\n请发送要添加的作者名称：", config, msg_id, inline_keyboard=[
                                             [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
                                         ])
-                                else:
-                                    clear_user_state(config, user_id)
-                                    send_telegram_message("❌ 源不存在", config, msg_id)
-                                continue
-                            
-                            elif state == 'waiting_for_author_keywords':
-                                source_id = state_data.get('source_id')
-                                author_name = state_data.get('author_name')
-                                source = get_source_by_id_or_name(config, source_id)
-                                
-                                if source:
-                                    keywords_text = text.strip()
-                                    
-                                    # 解析关键词（逗号分隔）
-                                    if keywords_text:
-                                        keywords = [kw.strip() for kw in keywords_text.split(',') if kw.strip()]
-                                    else:
-                                        keywords = []
-                                    
-                                    # 查找作者
-                                    whitelist = source.get('author_whitelist', [])
-                                    author_obj = find_author_in_list(author_name, whitelist)
-                                    
-                                    if author_obj:
-                                        # 确保是新格式
-                                        if not isinstance(author_obj, dict):
-                                            # 转换为新格式
-                                            idx = whitelist.index(author_obj)
-                                            author_obj = {
-                                                'name': author_name,
-                                                'match_mode': 'exact',
-                                                'keywords': [],
-                                                'keywords_mode': 'none'
-                                            }
-                                            whitelist[idx] = author_obj
-                                        
-                                        # 设置关键词
-                                        author_obj['keywords'] = keywords
-                                        if keywords:
-                                            # 默认设置为 'any' 模式
-                                            if author_obj.get('keywords_mode') == 'none':
-                                                author_obj['keywords_mode'] = 'any'
-                                        else:
-                                            author_obj['keywords_mode'] = 'none'
-                                        
-                                        save_config(config)
-                                        clear_user_state(config, user_id)
-                                        
-                                        # 显示作者详情
-                                        match_mode = author_obj.get('match_mode', 'exact')
-                                        keywords_mode = author_obj.get('keywords_mode', 'none')
-                                        
-                                        message_text = (
-                                            f"<b>✓ 已设置关键词</b>\n\n"
-                                            f"<b>📝 作者详情 - {source['name']}</b>\n\n"
-                                            f"作者: <b>{author_name}</b>\n"
-                                            f"匹配模式: <code>{match_mode}</code>\n"
-                                            f"关键词模式: <code>{keywords_mode}</code>\n\n"
-                                        )
-                                        
-                                        if keywords:
-                                            message_text += "<b>关键词过滤:</b>\n"
-                                            for kw in keywords:
-                                                message_text += f"  • {kw}\n"
-                                        else:
-                                            message_text += "<b>关键词过滤:</b> (无，推送所有内容)\n"
-                                        
-                                        keyboard = [
-                                            [{"text": "📋 设置关键词", "callback_data": f"set_author_keywords:{source_id}:{author_name}"}],
-                                            [{"text": "🔄 切换关键词模式", "callback_data": f"toggle_keywords_mode:{source_id}:{author_name}"}],
-                                            [{"text": "🔄 切换匹配模式", "callback_data": f"toggle_author_match:{source_id}:{author_name}"}],
-                                            [{"text": "❌ 删除作者", "callback_data": f"del_whitelist:{source_id}:{author_name}"}],
-                                            [{"text": "🔙 返回白名单", "callback_data": f"view_whitelist:{source_id}"}]
-                                        ]
-                                        
-                                        if original_msg_id:
-                                            edit_telegram_message(chat_id, original_msg_id, message_text, config, inline_keyboard=keyboard)
-                                        else:
-                                            send_telegram_message(message_text, config, msg_id, inline_keyboard=keyboard)
-                                    else:
-                                        clear_user_state(config, user_id)
-                                        send_telegram_message("❌ 作者不存在", config, msg_id)
                                 else:
                                     clear_user_state(config, user_id)
                                     send_telegram_message("❌ 源不存在", config, msg_id)
@@ -2249,19 +1732,10 @@ def telegram_command_listener():
                             if 'author_whitelist' not in source:
                                 source['author_whitelist'] = []
                             
-                            whitelist = source.get('author_whitelist', [])
-                            
-                            if find_author_in_list(author, whitelist):
+                            if any(author.lower() == a.lower() for a in source.get('author_whitelist', [])):
                                 send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的白名单中已存在", config, msg_id)
                             else:
-                                # 添加新格式的作者对象
-                                new_author = {
-                                    'name': author,
-                                    'match_mode': 'exact',
-                                    'keywords': [],
-                                    'keywords_mode': 'none'
-                                }
-                                source['author_whitelist'].append(new_author)
+                                source['author_whitelist'].append(author)
                                 save_config(config)
                                 send_telegram_message(f"✓ 已为源 '{source['name']}' 添加白名单作者: {author}", config, msg_id)
                         
@@ -2279,13 +1753,12 @@ def telegram_command_listener():
                                 continue
                             
                             whitelist = source.get('author_whitelist', [])
-                            author_obj = find_author_in_list(author, whitelist)
+                            matching = [a for a in whitelist if a.lower() == author.lower()]
                             
-                            if author_obj:
-                                source['author_whitelist'].remove(author_obj)
+                            if matching:
+                                source['author_whitelist'].remove(matching[0])
                                 save_config(config)
-                                author_name = get_author_name(author_obj)
-                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除白名单作者: {author_name}", config, msg_id)
+                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除白名单作者: {matching[0]}", config, msg_id)
                             else:
                                 send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的白名单中不存在", config, msg_id)
                         
@@ -2348,27 +1821,12 @@ def telegram_command_listener():
                             match_mode = source.get('author_match_mode', 'contains')
                             
                             lines = [f"<b>{source['name']}</b> 的作者过滤设置:\n"]
-                            lines.append(f"全局匹配模式: <b>{match_mode}</b>\n")
+                            lines.append(f"匹配模式: <b>{match_mode}</b>\n")
                             
                             lines.append("<b>白名单作者:</b>")
                             if whitelist:
                                 for i, a in enumerate(whitelist, 1):
-                                    author_name = get_author_name(a)
-                                    if isinstance(a, dict):
-                                        a_match = a.get('match_mode', 'exact')
-                                        keywords = a.get('keywords', [])
-                                        kw_mode = a.get('keywords_mode', 'none')
-                                        
-                                        if keywords:
-                                            kw_display = ', '.join(keywords[:3])
-                                            if len(keywords) > 3:
-                                                kw_display += f"... (共{len(keywords)}个)"
-                                            lines.append(f"  {i}. {author_name}")
-                                            lines.append(f"     模式: {a_match}, 关键词: {kw_display} ({kw_mode})")
-                                        else:
-                                            lines.append(f"  {i}. {author_name} (模式: {a_match}, 无关键词过滤)")
-                                    else:
-                                        lines.append(f"  {i}. {author_name}")
+                                    lines.append(f"  {i}. {a}")
                             else:
                                 lines.append("  (无)")
                             
@@ -2420,13 +1878,7 @@ def telegram_command_listener():
                                 "• 使用按钮添加/删除RSS源\n"
                                 "• 使用按钮添加/删除关键词\n"
                                 "• 使用按钮管理作者过滤（白/黑名单）\n"
-                                "• 为每个作者设置独立的关键词过滤\n"
                                 "• 所有操作都可以通过按钮完成\n\n"
-                                "<b>⚡ 过滤逻辑（OR模式）：</b>\n"
-                                "满足以下任一条件即推送：\n"
-                                "1️⃣ 匹配全局关键词白名单\n"
-                                "2️⃣ 作者在白名单中（可配置该作者的专属关键词）\n"
-                                "❌ 黑名单优先：作者或关键词在黑名单中将被排除\n\n"
                                 "<b>⌨️ 命令行管理（备用）：</b>\n\n"
                                 "<b>源管理:</b>\n"
                                 "/addsource &lt;url&gt; &lt;name&gt; - 添加RSS源\n"
@@ -2445,8 +1897,7 @@ def telegram_command_listener():
                                 "/list_authors &lt;source_name&gt; - 查看作者过滤设置\n\n"
                                 "<b>💡 使用建议：</b>\n"
                                 "推荐使用 /manage 进入按钮管理界面，\n"
-                                "所有添加和删除操作都更加直观方便！\n"
-                                "点击作者名称可查看详情并设置专属关键词。\n\n"
+                                "所有添加和删除操作都更加直观方便！\n\n"
                                 "/help - 查看此帮助"
                             )
                             send_telegram_message(help_msg, config, msg_id)
