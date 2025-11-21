@@ -78,10 +78,7 @@ DEFAULT_CONFIG = {
             'name': 'NodeSeek',
             'url': 'https://rss.nodeseek.com/',
             'keywords': [],
-            'notified_posts': [],
-            'author_whitelist': [],
-            'author_blacklist': [],
-            'author_match_mode': 'contains'
+            'notified_posts': []
         }
     ],
     'monitor_settings': {
@@ -138,15 +135,6 @@ def load_config():
                 config['monitor_settings'] = DEFAULT_CONFIG['monitor_settings'].copy()
             if 'user_states' not in config:
                 config['user_states'] = {}
-            
-            # Ensure all sources have author filter fields
-            for source in config.get('rss_sources', []):
-                if 'author_whitelist' not in source:
-                    source['author_whitelist'] = []
-                if 'author_blacklist' not in source:
-                    source['author_blacklist'] = []
-                if 'author_match_mode' not in source:
-                    source['author_match_mode'] = 'contains'
         
         return config
 
@@ -309,74 +297,6 @@ def save_dedup_history(source: dict, dedup_hist: DedupHistory):
     # Keep backward-compatible notified_posts list
     source['notified_posts'] = list(dedup_hist.history.keys())
 
-def check_author_match(author, filter_list, match_mode='contains'):
-    """
-    检查作者是否匹配过滤列表
-    
-    Args:
-        author: 作者名称
-        filter_list: 过滤列表
-        match_mode: 匹配模式 ('exact' 或 'contains')
-    
-    Returns:
-        bool: 是否匹配
-    """
-    if not author or not filter_list:
-        return False
-    
-    author_lower = author.lower().strip()
-    
-    for filter_author in filter_list:
-        filter_lower = filter_author.lower().strip()
-        
-        if match_mode == 'exact':
-            if author_lower == filter_lower:
-                return True
-        else:  # contains mode (default)
-            if filter_lower in author_lower or author_lower in filter_lower:
-                return True
-    
-    return False
-
-def should_filter_by_author(author, source):
-    """
-    判断是否应该根据作者过滤掉此条目
-    
-    Args:
-        author: 作者名称
-        source: RSS源配置
-    
-    Returns:
-        tuple: (should_skip, reason) - 是否应该跳过和原因
-    """
-    whitelist = source.get('author_whitelist', [])
-    blacklist = source.get('author_blacklist', [])
-    match_mode = source.get('author_match_mode', 'contains')
-    
-    # 如果没有配置任何作者过滤，放行
-    if not whitelist and not blacklist:
-        return False, None
-    
-    # 白名单优先：如果配置了白名单，只允许白名单中的作者
-    if whitelist:
-        if not author:
-            return True, "作者为空且配置了白名单"
-        
-        if check_author_match(author, whitelist, match_mode):
-            # 在白名单中，但还需要检查是否在黑名单
-            if blacklist and check_author_match(author, blacklist, match_mode):
-                return True, f"作者 '{author}' 在白名单但也在黑名单"
-            return False, None  # 在白名单且不在黑名单，放行
-        else:
-            return True, f"作者 '{author}' 不在白名单中"
-    
-    # 只有黑名单：排除黑名单中的作者
-    if blacklist:
-        if author and check_author_match(author, blacklist, match_mode):
-            return True, f"作者 '{author}' 在黑名单中"
-    
-    return False, None
-
 def check_rss_feed(source, config):
     """检查单个RSS源并匹配关键词（使用改进的去重逻辑）"""
     source_name = source.get('name', 'Unknown')
@@ -521,15 +441,6 @@ def check_rss_feed(source, config):
                             matched_keywords.append(keyword)
                     
                     if matched_keywords:
-                        # Check author filter (after keyword match, AND logic)
-                        should_skip, skip_reason = should_filter_by_author(author, source)
-                        
-                        if should_skip:
-                            logger.info(f"[{source_name}] ⏭️ 作者过滤跳过: {skip_reason}")
-                            if enable_debug:
-                                logger.debug(f"  Title was: {title}")
-                            continue
-                        
                         # Prepare and send notification
                         message = f"<b>来源：{source_name}</b>\n标题：{title}\n关键词：{', '.join(matched_keywords)}\n作者：{author or '未知'}\n链接：{link}"
                         
@@ -725,7 +636,6 @@ def handle_callback_query(callback_query, config):
             
             keyboard.extend([
                 [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
-                [{"text": "👤 作者管理", "callback_data": f"author_menu:{source['id']}"}],
                 [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
                 [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
             ])
@@ -794,7 +704,6 @@ def handle_callback_query(callback_query, config):
                         
                         keyboard.extend([
                             [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
-                            [{"text": "👤 作者管理", "callback_data": f"author_menu:{source['id']}"}],
                             [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
                             [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
                         ])
@@ -849,7 +758,6 @@ def handle_callback_query(callback_query, config):
                 
                 keyboard.extend([
                     [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
-                    [{"text": "👤 作者管理", "callback_data": f"author_menu:{source['id']}"}],
                     [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
                     [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
                 ])
@@ -935,328 +843,6 @@ def handle_callback_query(callback_query, config):
             message_text = "<b>📡 RSS源管理</b>\n\n点击下方按钮管理对应的RSS源："
             if not sources:
                 message_text = "<b>📡 RSS源管理</b>\n\n当前没有RSS源，点击下方按钮添加："
-            
-            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("author_menu:"):
-            source_id = data[12:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            answer_callback_query(query_id, config)
-            
-            whitelist = source.get('author_whitelist', [])
-            blacklist = source.get('author_blacklist', [])
-            match_mode = source.get('author_match_mode', 'contains')
-            
-            message_text = (
-                f"<b>👤 作者过滤管理 - {source['name']}</b>\n\n"
-                f"当前匹配模式: <b>{match_mode}</b>\n"
-                f"白名单作者数: <b>{len(whitelist)}</b>\n"
-                f"黑名单作者数: <b>{len(blacklist)}</b>\n\n"
-                f"选择操作："
-            )
-            
-            keyboard = [
-                [{"text": "🤍 查看白名单", "callback_data": f"view_whitelist:{source_id}"}],
-                [{"text": "🚫 查看黑名单", "callback_data": f"view_blacklist:{source_id}"}],
-                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                [{"text": f"🔄 切换匹配模式 (当前: {match_mode})", "callback_data": f"toggle_match_mode:{source_id}"}],
-                [{"text": "🔙 返回源管理", "callback_data": f"source:{source_id}"}]
-            ]
-            
-            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("view_whitelist:"):
-            source_id = data[15:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            answer_callback_query(query_id, config)
-            
-            whitelist = source.get('author_whitelist', [])
-            
-            if not whitelist:
-                message_text = f"<b>🤍 白名单作者 - {source['name']}</b>\n\n(暂无白名单作者)"
-                keyboard = [
-                    [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                    [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                ]
-            else:
-                message_text = f"<b>🤍 白名单作者 - {source['name']}</b>\n\n"
-                keyboard = []
-                
-                for author in whitelist:
-                    display_name = author if len(author) <= 30 else author[:27] + "..."
-                    message_text += f"• {author}\n"
-                    keyboard.append([
-                        {"text": f"❌ {display_name}", "callback_data": f"del_whitelist:{source_id}:{author}"}
-                    ])
-                
-                keyboard.extend([
-                    [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                    [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                ])
-            
-            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("view_blacklist:"):
-            source_id = data[15:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            answer_callback_query(query_id, config)
-            
-            blacklist = source.get('author_blacklist', [])
-            
-            if not blacklist:
-                message_text = f"<b>🚫 黑名单作者 - {source['name']}</b>\n\n(暂无黑名单作者)"
-                keyboard = [
-                    [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                    [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                ]
-            else:
-                message_text = f"<b>🚫 黑名单作者 - {source['name']}</b>\n\n"
-                keyboard = []
-                
-                for author in blacklist:
-                    display_name = author if len(author) <= 30 else author[:27] + "..."
-                    message_text += f"• {author}\n"
-                    keyboard.append([
-                        {"text": f"❌ {display_name}", "callback_data": f"del_blacklist:{source_id}:{author}"}
-                    ])
-                
-                keyboard.extend([
-                    [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                    [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                ])
-            
-            edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("add_whitelist:"):
-            source_id = data[14:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            set_user_state(config, user_id, 'waiting_for_whitelist_author', {'source_id': source_id, 'message_id': message_id})
-            answer_callback_query(query_id, config, "✏️ 请发送要添加的作者名称")
-            
-            msg_text = f"<b>➕ 添加白名单作者到 {source['name']}</b>\n\n请直接发送作者名称："
-            edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=[
-                [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-            ])
-        
-        elif data.startswith("add_blacklist:"):
-            source_id = data[14:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            set_user_state(config, user_id, 'waiting_for_blacklist_author', {'source_id': source_id, 'message_id': message_id})
-            answer_callback_query(query_id, config, "✏️ 请发送要添加的作者名称")
-            
-            msg_text = f"<b>➕ 添加黑名单作者到 {source['name']}</b>\n\n请直接发送作者名称："
-            edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=[
-                [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-            ])
-        
-        elif data.startswith("del_whitelist:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if source and 'author_whitelist' in source:
-                    if author in source['author_whitelist']:
-                        answer_callback_query(query_id, config)
-                        
-                        msg_text = f"<b>⚠️ 确认删除白名单作者</b>\n\n确定要从白名单中删除作者 <b>{author}</b> 吗？"
-                        keyboard = [
-                            [{"text": "✅ 确认删除", "callback_data": f"confirm_del_whitelist:{source_id}:{author}"}],
-                            [{"text": "❌ 取消", "callback_data": f"view_whitelist:{source_id}"}]
-                        ]
-                        edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=keyboard)
-                    else:
-                        answer_callback_query(query_id, config, "❌ 作者不存在")
-        
-        elif data.startswith("confirm_del_whitelist:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if source and 'author_whitelist' in source:
-                    if author in source['author_whitelist']:
-                        source['author_whitelist'].remove(author)
-                        save_config(config)
-                        answer_callback_query(query_id, config, f"✓ 已删除白名单作者: {author}")
-                        
-                        whitelist = source.get('author_whitelist', [])
-                        
-                        if not whitelist:
-                            message_text = f"<b>✓ 已删除白名单作者: {author}</b>\n\n<b>🤍 白名单作者 - {source['name']}</b>\n\n(暂无白名单作者)"
-                            keyboard = [
-                                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                            ]
-                        else:
-                            message_text = f"<b>✓ 已删除白名单作者: {author}</b>\n\n<b>🤍 白名单作者 - {source['name']}</b>\n\n"
-                            keyboard = []
-                            
-                            for a in whitelist:
-                                display_name = a if len(a) <= 30 else a[:27] + "..."
-                                message_text += f"• {a}\n"
-                                keyboard.append([
-                                    {"text": f"❌ {display_name}", "callback_data": f"del_whitelist:{source_id}:{a}"}
-                                ])
-                            
-                            keyboard.extend([
-                                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                            ])
-                        
-                        edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("del_blacklist:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if source and 'author_blacklist' in source:
-                    if author in source['author_blacklist']:
-                        answer_callback_query(query_id, config)
-                        
-                        msg_text = f"<b>⚠️ 确认删除黑名单作者</b>\n\n确定要从黑名单中删除作者 <b>{author}</b> 吗？"
-                        keyboard = [
-                            [{"text": "✅ 确认删除", "callback_data": f"confirm_del_blacklist:{source_id}:{author}"}],
-                            [{"text": "❌ 取消", "callback_data": f"view_blacklist:{source_id}"}]
-                        ]
-                        edit_telegram_message(chat_id, message_id, msg_text, config, inline_keyboard=keyboard)
-                    else:
-                        answer_callback_query(query_id, config, "❌ 作者不存在")
-        
-        elif data.startswith("confirm_del_blacklist:"):
-            parts = data.split(":", 2)
-            if len(parts) == 3:
-                source_id = parts[1]
-                author = parts[2]
-                
-                source = get_source_by_id_or_name(config, source_id)
-                if source and 'author_blacklist' in source:
-                    if author in source['author_blacklist']:
-                        source['author_blacklist'].remove(author)
-                        save_config(config)
-                        answer_callback_query(query_id, config, f"✓ 已删除黑名单作者: {author}")
-                        
-                        blacklist = source.get('author_blacklist', [])
-                        
-                        if not blacklist:
-                            message_text = f"<b>✓ 已删除黑名单作者: {author}</b>\n\n<b>🚫 黑名单作者 - {source['name']}</b>\n\n(暂无黑名单作者)"
-                            keyboard = [
-                                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                            ]
-                        else:
-                            message_text = f"<b>✓ 已删除黑名单作者: {author}</b>\n\n<b>🚫 黑名单作者 - {source['name']}</b>\n\n"
-                            keyboard = []
-                            
-                            for a in blacklist:
-                                display_name = a if len(a) <= 30 else a[:27] + "..."
-                                message_text += f"• {a}\n"
-                                keyboard.append([
-                                    {"text": f"❌ {display_name}", "callback_data": f"del_blacklist:{source_id}:{a}"}
-                                ])
-                            
-                            keyboard.extend([
-                                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                            ])
-                        
-                        edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("cancel_author_input:"):
-            source_id = data[20:]
-            clear_user_state(config, user_id)
-            answer_callback_query(query_id, config, "已取消")
-            
-            source = get_source_by_id_or_name(config, source_id)
-            if source:
-                whitelist = source.get('author_whitelist', [])
-                blacklist = source.get('author_blacklist', [])
-                match_mode = source.get('author_match_mode', 'contains')
-                
-                message_text = (
-                    f"<b>👤 作者过滤管理 - {source['name']}</b>\n\n"
-                    f"当前匹配模式: <b>{match_mode}</b>\n"
-                    f"白名单作者数: <b>{len(whitelist)}</b>\n"
-                    f"黑名单作者数: <b>{len(blacklist)}</b>\n\n"
-                    f"选择操作："
-                )
-                
-                keyboard = [
-                    [{"text": "🤍 查看白名单", "callback_data": f"view_whitelist:{source_id}"}],
-                    [{"text": "🚫 查看黑名单", "callback_data": f"view_blacklist:{source_id}"}],
-                    [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                    [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                    [{"text": f"🔄 切换匹配模式 (当前: {match_mode})", "callback_data": f"toggle_match_mode:{source_id}"}],
-                    [{"text": "🔙 返回源管理", "callback_data": f"source:{source_id}"}]
-                ]
-                
-                edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
-        
-        elif data.startswith("toggle_match_mode:"):
-            source_id = data[18:]
-            source = get_source_by_id_or_name(config, source_id)
-            
-            if not source:
-                answer_callback_query(query_id, config, "❌ 源不存在")
-                return
-            
-            current_mode = source.get('author_match_mode', 'contains')
-            new_mode = 'exact' if current_mode == 'contains' else 'contains'
-            source['author_match_mode'] = new_mode
-            save_config(config)
-            
-            answer_callback_query(query_id, config, f"✓ 已切换到 {new_mode} 模式")
-            
-            whitelist = source.get('author_whitelist', [])
-            blacklist = source.get('author_blacklist', [])
-            
-            message_text = (
-                f"<b>👤 作者过滤管理 - {source['name']}</b>\n\n"
-                f"当前匹配模式: <b>{new_mode}</b>\n"
-                f"白名单作者数: <b>{len(whitelist)}</b>\n"
-                f"黑名单作者数: <b>{len(blacklist)}</b>\n\n"
-                f"选择操作："
-            )
-            
-            keyboard = [
-                [{"text": "🤍 查看白名单", "callback_data": f"view_whitelist:{source_id}"}],
-                [{"text": "🚫 查看黑名单", "callback_data": f"view_blacklist:{source_id}"}],
-                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                [{"text": f"🔄 切换匹配模式 (当前: {new_mode})", "callback_data": f"toggle_match_mode:{source_id}"}],
-                [{"text": "🔙 返回源管理", "callback_data": f"source:{source_id}"}]
-            ]
             
             edit_telegram_message(chat_id, message_id, message_text, config, inline_keyboard=keyboard)
     
@@ -1356,7 +942,6 @@ def telegram_command_listener():
                                             
                                             keyboard.extend([
                                                 [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source['id']}"}],
-                                                [{"text": "👤 作者管理", "callback_data": f"author_menu:{source['id']}"}],
                                                 [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source['id']}"}],
                                                 [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
                                             ])
@@ -1417,10 +1002,7 @@ def telegram_command_listener():
                                             'name': name,
                                             'url': url,
                                             'keywords': [],
-                                            'notified_posts': [],
-                                            'author_whitelist': [],
-                                            'author_blacklist': [],
-                                            'author_match_mode': 'contains'
+                                            'notified_posts': []
                                         }
                                         config['rss_sources'].append(new_source)
                                         save_config(config)
@@ -1437,7 +1019,6 @@ def telegram_command_listener():
                                         
                                         keyboard = [
                                             [{"text": "➕ 添加关键词", "callback_data": f"addkw:{source_id}"}],
-                                            [{"text": "👤 作者管理", "callback_data": f"author_menu:{source_id}"}],
                                             [{"text": "🗑️ 删除此源", "callback_data": f"delsource_confirm:{source_id}"}],
                                             [{"text": "🔙 返回源列表", "callback_data": "back_to_sources"}]
                                         ]
@@ -1450,104 +1031,6 @@ def telegram_command_listener():
                                     send_telegram_message("❌ 名称不能为空\n\n请发送RSS源的名称：", config, msg_id, inline_keyboard=[
                                         [{"text": "❌ 取消", "callback_data": "cancel_addsource"}]
                                     ])
-                                continue
-                            
-                            elif state == 'waiting_for_whitelist_author':
-                                source_id = state_data.get('source_id')
-                                source = get_source_by_id_or_name(config, source_id)
-                                
-                                if source:
-                                    author = text.strip()
-                                    if author:
-                                        if 'author_whitelist' not in source:
-                                            source['author_whitelist'] = []
-                                        
-                                        if any(author.lower() == a.lower() for a in source.get('author_whitelist', [])):
-                                            send_telegram_message(f"❌ 作者 '{author}' 已在白名单中\n\n请发送其他作者名称，或点击下方按钮取消：", config, msg_id, inline_keyboard=[
-                                                [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-                                            ])
-                                        else:
-                                            source['author_whitelist'].append(author)
-                                            save_config(config)
-                                            clear_user_state(config, user_id)
-                                            
-                                            whitelist = source.get('author_whitelist', [])
-                                            
-                                            message_text = f"<b>✓ 已添加白名单作者: {author}</b>\n\n<b>🤍 白名单作者 - {source['name']}</b>\n\n"
-                                            keyboard = []
-                                            
-                                            for a in whitelist:
-                                                display_name = a if len(a) <= 30 else a[:27] + "..."
-                                                message_text += f"• {a}\n"
-                                                keyboard.append([
-                                                    {"text": f"❌ {display_name}", "callback_data": f"del_whitelist:{source_id}:{a}"}
-                                                ])
-                                            
-                                            keyboard.extend([
-                                                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source_id}"}],
-                                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                                            ])
-                                            
-                                            if original_msg_id:
-                                                edit_telegram_message(chat_id, original_msg_id, message_text, config, inline_keyboard=keyboard)
-                                            else:
-                                                send_telegram_message(message_text, config, msg_id, inline_keyboard=keyboard)
-                                    else:
-                                        send_telegram_message("❌ 作者名称不能为空\n\n请发送要添加的作者名称：", config, msg_id, inline_keyboard=[
-                                            [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-                                        ])
-                                else:
-                                    clear_user_state(config, user_id)
-                                    send_telegram_message("❌ 源不存在", config, msg_id)
-                                continue
-                            
-                            elif state == 'waiting_for_blacklist_author':
-                                source_id = state_data.get('source_id')
-                                source = get_source_by_id_or_name(config, source_id)
-                                
-                                if source:
-                                    author = text.strip()
-                                    if author:
-                                        if 'author_blacklist' not in source:
-                                            source['author_blacklist'] = []
-                                        
-                                        if any(author.lower() == a.lower() for a in source.get('author_blacklist', [])):
-                                            send_telegram_message(f"❌ 作者 '{author}' 已在黑名单中\n\n请发送其他作者名称，或点击下方按钮取消：", config, msg_id, inline_keyboard=[
-                                                [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-                                            ])
-                                        else:
-                                            source['author_blacklist'].append(author)
-                                            save_config(config)
-                                            clear_user_state(config, user_id)
-                                            
-                                            blacklist = source.get('author_blacklist', [])
-                                            
-                                            message_text = f"<b>✓ 已添加黑名单作者: {author}</b>\n\n<b>🚫 黑名单作者 - {source['name']}</b>\n\n"
-                                            keyboard = []
-                                            
-                                            for a in blacklist:
-                                                display_name = a if len(a) <= 30 else a[:27] + "..."
-                                                message_text += f"• {a}\n"
-                                                keyboard.append([
-                                                    {"text": f"❌ {display_name}", "callback_data": f"del_blacklist:{source_id}:{a}"}
-                                                ])
-                                            
-                                            keyboard.extend([
-                                                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source_id}"}],
-                                                [{"text": "🔙 返回作者管理", "callback_data": f"author_menu:{source_id}"}]
-                                            ])
-                                            
-                                            if original_msg_id:
-                                                edit_telegram_message(chat_id, original_msg_id, message_text, config, inline_keyboard=keyboard)
-                                            else:
-                                                send_telegram_message(message_text, config, msg_id, inline_keyboard=keyboard)
-                                    else:
-                                        send_telegram_message("❌ 作者名称不能为空\n\n请发送要添加的作者名称：", config, msg_id, inline_keyboard=[
-                                            [{"text": "❌ 取消", "callback_data": f"cancel_author_input:{source_id}"}]
-                                        ])
-                                else:
-                                    clear_user_state(config, user_id)
-                                    send_telegram_message("❌ 源不存在", config, msg_id)
                                 continue
                         
                         if text.startswith("/addsource "):
@@ -1568,10 +1051,7 @@ def telegram_command_listener():
                                 'name': name,
                                 'url': url_part,
                                 'keywords': [],
-                                'notified_posts': [],
-                                'author_whitelist': [],
-                                'author_blacklist': [],
-                                'author_match_mode': 'contains'
+                                'notified_posts': []
                             }
                             config['rss_sources'].append(new_source)
                             save_config(config)
@@ -1716,160 +1196,6 @@ def telegram_command_listener():
                                         lines.append("  (无关键词)")
                                 send_telegram_message('\n'.join(lines), config, msg_id)
                         
-                        elif text.startswith("/add_author "):
-                            parts = text[12:].strip().split(None, 1)
-                            if len(parts) < 2:
-                                send_telegram_message("用法: /add_author <source_name> <author_name>", config, msg_id)
-                                continue
-                            
-                            source_name, author = parts[0], parts[1]
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            if 'author_whitelist' not in source:
-                                source['author_whitelist'] = []
-                            
-                            if any(author.lower() == a.lower() for a in source.get('author_whitelist', [])):
-                                send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的白名单中已存在", config, msg_id)
-                            else:
-                                source['author_whitelist'].append(author)
-                                save_config(config)
-                                send_telegram_message(f"✓ 已为源 '{source['name']}' 添加白名单作者: {author}", config, msg_id)
-                        
-                        elif text.startswith("/del_author "):
-                            parts = text[12:].strip().split(None, 1)
-                            if len(parts) < 2:
-                                send_telegram_message("用法: /del_author <source_name> <author_name>", config, msg_id)
-                                continue
-                            
-                            source_name, author = parts[0], parts[1]
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            whitelist = source.get('author_whitelist', [])
-                            matching = [a for a in whitelist if a.lower() == author.lower()]
-                            
-                            if matching:
-                                source['author_whitelist'].remove(matching[0])
-                                save_config(config)
-                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除白名单作者: {matching[0]}", config, msg_id)
-                            else:
-                                send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的白名单中不存在", config, msg_id)
-                        
-                        elif text.startswith("/add_author_blacklist "):
-                            parts = text[22:].strip().split(None, 1)
-                            if len(parts) < 2:
-                                send_telegram_message("用法: /add_author_blacklist <source_name> <author_name>", config, msg_id)
-                                continue
-                            
-                            source_name, author = parts[0], parts[1]
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            if 'author_blacklist' not in source:
-                                source['author_blacklist'] = []
-                            
-                            if any(author.lower() == a.lower() for a in source.get('author_blacklist', [])):
-                                send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的黑名单中已存在", config, msg_id)
-                            else:
-                                source['author_blacklist'].append(author)
-                                save_config(config)
-                                send_telegram_message(f"✓ 已为源 '{source['name']}' 添加黑名单作者: {author}", config, msg_id)
-                        
-                        elif text.startswith("/del_author_blacklist "):
-                            parts = text[22:].strip().split(None, 1)
-                            if len(parts) < 2:
-                                send_telegram_message("用法: /del_author_blacklist <source_name> <author_name>", config, msg_id)
-                                continue
-                            
-                            source_name, author = parts[0], parts[1]
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            blacklist = source.get('author_blacklist', [])
-                            matching = [a for a in blacklist if a.lower() == author.lower()]
-                            
-                            if matching:
-                                source['author_blacklist'].remove(matching[0])
-                                save_config(config)
-                                send_telegram_message(f"✓ 已从源 '{source['name']}' 删除黑名单作者: {matching[0]}", config, msg_id)
-                            else:
-                                send_telegram_message(f"作者 '{author}' 在源 '{source['name']}' 的黑名单中不存在", config, msg_id)
-                        
-                        elif text.startswith("/list_authors "):
-                            source_name = text[14:].strip()
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            whitelist = source.get('author_whitelist', [])
-                            blacklist = source.get('author_blacklist', [])
-                            match_mode = source.get('author_match_mode', 'contains')
-                            
-                            lines = [f"<b>{source['name']}</b> 的作者过滤设置:\n"]
-                            lines.append(f"匹配模式: <b>{match_mode}</b>\n")
-                            
-                            lines.append("<b>白名单作者:</b>")
-                            if whitelist:
-                                for i, a in enumerate(whitelist, 1):
-                                    lines.append(f"  {i}. {a}")
-                            else:
-                                lines.append("  (无)")
-                            
-                            lines.append("\n<b>黑名单作者:</b>")
-                            if blacklist:
-                                for i, a in enumerate(blacklist, 1):
-                                    lines.append(f"  {i}. {a}")
-                            else:
-                                lines.append("  (无)")
-                            
-                            send_telegram_message('\n'.join(lines), config, msg_id)
-                        
-                        elif text.startswith("/manage_authors "):
-                            source_name = text[16:].strip()
-                            source = get_source_by_id_or_name(config, source_name)
-                            
-                            if not source:
-                                send_telegram_message(f"源 '{source_name}' 不存在\n使用 /listsources 查看所有源", config, msg_id)
-                                continue
-                            
-                            whitelist = source.get('author_whitelist', [])
-                            blacklist = source.get('author_blacklist', [])
-                            match_mode = source.get('author_match_mode', 'contains')
-                            
-                            message_text = (
-                                f"<b>👤 作者过滤管理 - {source['name']}</b>\n\n"
-                                f"当前匹配模式: <b>{match_mode}</b>\n"
-                                f"白名单作者数: <b>{len(whitelist)}</b>\n"
-                                f"黑名单作者数: <b>{len(blacklist)}</b>\n\n"
-                                f"选择操作："
-                            )
-                            
-                            keyboard = [
-                                [{"text": "🤍 查看白名单", "callback_data": f"view_whitelist:{source['id']}"}],
-                                [{"text": "🚫 查看黑名单", "callback_data": f"view_blacklist:{source['id']}"}],
-                                [{"text": "➕ 添加白名单作者", "callback_data": f"add_whitelist:{source['id']}"}],
-                                [{"text": "➕ 添加黑名单作者", "callback_data": f"add_blacklist:{source['id']}"}],
-                                [{"text": f"🔄 切换匹配模式 (当前: {match_mode})", "callback_data": f"toggle_match_mode:{source['id']}"}],
-                                [{"text": "🔙 返回源管理", "callback_data": f"source:{source['id']}"}]
-                            ]
-                            
-                            send_telegram_message(message_text, config, msg_id, inline_keyboard=keyboard)
-                        
                         elif text.startswith("/help") or text.startswith("/start"):
                             help_msg = (
                                 "<b>🤖 RSS 监控机器人</b>\n\n"
@@ -1877,7 +1203,6 @@ def telegram_command_listener():
                                 "/manage 或 /listsources - 打开管理面板\n"
                                 "• 使用按钮添加/删除RSS源\n"
                                 "• 使用按钮添加/删除关键词\n"
-                                "• 使用按钮管理作者过滤（白/黑名单）\n"
                                 "• 所有操作都可以通过按钮完成\n\n"
                                 "<b>⌨️ 命令行管理（备用）：</b>\n\n"
                                 "<b>源管理:</b>\n"
@@ -1888,13 +1213,6 @@ def telegram_command_listener():
                                 "/del &lt;source_name&gt; &lt;序号或关键词&gt; - 删除关键词\n"
                                 "/list &lt;source_name&gt; - 列出指定源的关键词\n"
                                 "/list - 列出所有源的关键词\n\n"
-                                "<b>作者过滤管理:</b>\n"
-                                "/manage_authors &lt;source_name&gt; - 打开作者管理面板\n"
-                                "/add_author &lt;source_name&gt; &lt;author&gt; - 添加白名单作者\n"
-                                "/del_author &lt;source_name&gt; &lt;author&gt; - 删除白名单作者\n"
-                                "/add_author_blacklist &lt;source_name&gt; &lt;author&gt; - 添加黑名单作者\n"
-                                "/del_author_blacklist &lt;source_name&gt; &lt;author&gt; - 删除黑名单作者\n"
-                                "/list_authors &lt;source_name&gt; - 查看作者过滤设置\n\n"
                                 "<b>💡 使用建议：</b>\n"
                                 "推荐使用 /manage 进入按钮管理界面，\n"
                                 "所有添加和删除操作都更加直观方便！\n\n"
